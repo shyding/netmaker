@@ -146,6 +146,10 @@ jobs:
 
             # 前端服务（使用 Nginx）
             echo "=== 配置 Nginx ==="
+            # 创建 sites-available 和 sites-enabled 目录（如果不存在）
+            sudo mkdir -p /etc/nginx/sites-available
+            sudo mkdir -p /etc/nginx/sites-enabled
+
             sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
             server {
                 listen 8888;
@@ -171,6 +175,12 @@ jobs:
 
             # 启用 Nginx 站点
             sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
+
+            # 确保 nginx.conf 包含 sites-enabled
+            if ! grep -q "include /etc/nginx/sites-enabled/\*;" /etc/nginx/nginx.conf; then
+              sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+            fi
+
             sudo nginx -t && sudo systemctl reload nginx || echo "Nginx 配置有误，请检查"
 
             echo "=== 重新加载 systemd ==="
