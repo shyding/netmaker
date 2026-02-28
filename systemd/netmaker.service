@@ -1,0 +1,27 @@
+[Unit]
+Description=Netmaker Server
+Documentation=https://docs.netmaker.io
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netmaker
+EnvironmentFile=/opt/netmaker/server.env
+ExecStart=/opt/netmaker/netmaker
+Restart=always
+RestartSec=10
+
+# 日志配置
+StandardOutput=append:/var/log/netmaker/netmaker.log
+StandardError=append:/var/log/netmaker/netmaker-error.log
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+
+# 资源限制
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,214 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  GO_VERSION: '1.25.3'
+  NODE_VERSION: '17'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build Backend
+        run: |
+          cd netmaker
+          go mod download
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o netmaker-linux .
+
+      - name: Build Frontend
+        run: |
+          cd netmaker-ui
+          npm ci
+          export NODE_OPTIONS="--openssl-legacy-provider"
+          npm run build
+          tar -czf frontend-build.tar.gz build/
+
+      - name: Prepare deployment package
+        run: |
+          mkdir -p deploy-package
+          cp netmaker/netmaker-linux deploy-package/
+          cp netmaker-ui/frontend-build.tar.gz deploy-package/
+          cp -r netmaker/config deploy-package/ || true
+
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "deploy-package/*"
+          target: "/tmp/netmaker-deploy"
+          strip_components: 1
+
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -e
+
+            # 定义安装目录
+            INSTALL_DIR="/opt/netmaker"
+            FRONTEND_DIR="/var/www/netmaker"
+
+            echo "=== 停止现有服务 ==="
+            sudo systemctl stop netmaker || true
+            sudo systemctl stop netmaker-ui || true
+
+            echo "=== 创建目录 ==="
+            sudo mkdir -p $INSTALL_DIR
+            sudo mkdir -p $FRONTEND_DIR
+            sudo mkdir -p $INSTALL_DIR/config
+            sudo mkdir -p /var/log/netmaker
+
+            echo "=== 部署后端 ==="
+            sudo cp /tmp/netmaker-deploy/netmaker-linux $INSTALL_DIR/netmaker
+            sudo chmod +x $INSTALL_DIR/netmaker
+
+            # 复制配置文件（如果存在）
+            if [ -d "/tmp/netmaker-deploy/config" ]; then
+              sudo cp -r /tmp/netmaker-deploy/config/* $INSTALL_DIR/config/
+            fi
+
+            echo "=== 部署前端 ==="
+            cd /tmp/netmaker-deploy
+            tar -xzf frontend-build.tar.gz
+            sudo cp -r build/* $FRONTEND_DIR/
+
+            # 生成前端配置
+            sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
+            window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
+            EOF
+
+            echo "=== 创建后端配置文件 ==="
+            sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
+            SERVER_HOST=0.0.0.0
+            API_PORT=8081
+            MASTER_KEY=${{ secrets.NETMAKER_MASTER_KEY }}
+            DATABASE=sqlite
+            SQL_CONN=$INSTALL_DIR/netmaker.db
+            CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
+            SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
+            EOF
+
+            echo "=== 创建 systemd 服务文件 ==="
+
+            # 后端服务
+            sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
+            [Unit]
+            Description=Netmaker Server
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=/opt/netmaker
+            EnvironmentFile=/opt/netmaker/server.env
+            ExecStart=/opt/netmaker/netmaker
+            Restart=always
+            RestartSec=10
+            StandardOutput=append:/var/log/netmaker/netmaker.log
+            StandardError=append:/var/log/netmaker/netmaker-error.log
+
+            # 安全设置
+            NoNewPrivileges=true
+            PrivateTmp=true
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            # 前端服务（使用 Nginx）
+            echo "=== 配置 Nginx ==="
+            sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
+            server {
+                listen 8888;
+                server_name ${{ secrets.DOMAIN_NAME }};
+
+                # 前端
+                location / {
+                    root /var/www/netmaker;
+                    try_files $uri $uri/ /index.html;
+                    add_header Cache-Control "no-cache";
+                }
+
+                # 后端 API
+                location /api {
+                    proxy_pass http://localhost:8081;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+            EOF
+
+            # 启用 Nginx 站点
+            sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
+            sudo nginx -t && sudo systemctl reload nginx || echo "Nginx 配置有误，请检查"
+
+            echo "=== 重新加载 systemd ==="
+            sudo systemctl daemon-reload
+
+            echo "=== 启动服务 ==="
+            sudo systemctl enable netmaker
+            sudo systemctl start netmaker
+
+            echo "=== 检查服务状态 ==="
+            sudo systemctl status netmaker --no-pager || true
+
+            echo "=== 清理临时文件 ==="
+            rm -rf /tmp/netmaker-deploy
+
+            echo "=== 部署完成 ==="
+            echo "后端服务: http://localhost:8081"
+            echo "前端访问: http://${{ secrets.DOMAIN_NAME }}:8888"
+            echo ""
+            echo "查看日志:"
+            echo "  sudo journalctl -u netmaker -f"
+            echo "  sudo tail -f /var/log/netmaker/netmaker.log"
+
+      - name: Health Check
+        run: |
+          echo "等待服务启动..."
+          sleep 10
+
+          # 检查后端健康状态
+          curl -f ${{ secrets.BACKEND_URL }}/api/server/health || echo "健康检查失败，请手动检查"
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ 部署成功！"
+            echo "前端: http://${{ secrets.DOMAIN_NAME }}:8888"
+            echo "后端: ${{ secrets.BACKEND_URL }}"
+          else
+            echo "❌ 部署失败，请检查日志"
+          fi
