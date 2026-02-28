@@ -76,7 +76,7 @@ function* handleHasAdminRequest(
   try {
     const response: AxiosResponse = yield apiRequestSaga(
       'get',
-      '/users/adm/hasadmin',
+      '/users/adm/hassuperadmin',
       {}
     )
     yield put(hasAdmin['success'](response.status === 200 && response.data))
@@ -100,7 +100,7 @@ function* handleCreateAdminRequest(
     })
     const response: AxiosResponse = yield apiRequestSaga(
       'post',
-      '/users/adm/createadmin',
+      '/users/adm/createsuperadmin',
       action.payload,
       {}
     )
