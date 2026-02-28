@@ -1,0 +1,4 @@
+config/dnsconfig/
+data/
+/.git
+/*.tar

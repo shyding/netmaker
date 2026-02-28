@@ -1,0 +1,505 @@
+package models
+
+import (
+	"net"
+	"strings"
+	"time"
+
+	jwt "github.com/golang-jwt/jwt/v4"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+)
+
+const (
+	// PLACEHOLDER_KEY_TEXT - access key placeholder text if option turned off
+	PLACEHOLDER_KEY_TEXT = "ACCESS_KEY"
+	// PLACEHOLDER_TOKEN_TEXT - access key token placeholder text if option turned off
+	PLACEHOLDER_TOKEN_TEXT = "ACCESS_TOKEN"
+)
+
+type FeatureFlags struct {
+	EnableEgressHA                bool `json:"enable_egress_ha"`
+	EnableNetworkActivity         bool `json:"enable_network_activity"`
+	EnableOAuth                   bool `json:"enable_oauth"`
+	EnableIDPIntegration          bool `json:"enable_idp_integration"`
+	AllowMultiServerLicense       bool `json:"allow_multi_server_license"`
+	EnableGwsHA                   bool `json:"enable_gws_ha"`
+	EnableDeviceApproval          bool `json:"enable_device_approval"`
+	EnableFlowLogs                bool `json:"enable_flow_logs"`
+	EnablePostureChecks           bool `json:"enable_posture_checks"`
+	EnableJIT                     bool `json:"enable_jit"`
+	EnableOverlappingEgressRanges bool `json:"enable_overlapping_egress_ranges"`
+}
+
+// AuthParams - struct for auth params
+type AuthParams struct {
+	MacAddress string `json:"macaddress"`
+	ID         string `json:"id"`
+	Password   string `json:"password"`
+}
+
+// IngressGwUsers - struct to hold users on a ingress gw
+type IngressGwUsers struct {
+	NodeID  string       `json:"node_id"`
+	Network string       `json:"network"`
+	Users   []ReturnUser `json:"users"`
+}
+
+// UserRemoteGws - struct to hold user's remote gws
+type UserRemoteGws struct {
+	GwID              string     `json:"remote_access_gw_id"`
+	GWName            string     `json:"gw_name"`
+	Network           string     `json:"network"`
+	Connected         bool       `json:"connected"`
+	IsInternetGateway bool       `json:"is_internet_gateway"`
+	GwClient          ExtClient  `json:"gw_client"`
+	GwPeerPublicKey   string     `json:"gw_peer_public_key"`
+	GwListenPort      int        `json:"gw_listen_port"`
+	Metadata          string     `json:"metadata"`
+	AllowedEndpoints  []string   `json:"allowed_endpoints"`
+	NetworkAddresses  []string   `json:"network_addresses"`
+	Status            NodeStatus `json:"status"`
+	ManageDNS         bool       `json:"manage_dns"`
+	DnsAddress        string     `json:"dns_address"`
+	Addresses         string     `json:"addresses"`
+	MatchDomains      []string   `json:"match_domains"`
+	SearchDomains     []string   `json:"search_domains"`
+}
+
+// UserRAGs - struct for user access gws
+type UserRAGs struct {
+	GwID              string `json:"remote_access_gw_id"`
+	GWName            string `json:"gw_name"`
+	Network           string `json:"network"`
+	Connected         bool   `json:"connected"`
+	IsInternetGateway bool   `json:"is_internet_gateway"`
+	Metadata          string `json:"metadata"`
+}
+
+// UserRemoteGwsReq - struct to hold user remote acccess gws req
+type UserRemoteGwsReq struct {
+	RemoteAccessClientID string `json:"remote_access_clientid"`
+}
+
+// SuccessfulUserLoginResponse - successlogin struct
+type SuccessfulUserLoginResponse struct {
+	UserName  string
+	AuthToken string
+}
+
+// PartialUserLoginResponse represents the response returned to the client
+// after successful username and password authentication, but before the
+// completion of TOTP authentication.
+//
+// This response includes a temporary token required to complete
+// the authentication process.
+type PartialUserLoginResponse struct {
+	UserName     string `json:"user_name"`
+	PreAuthToken string `json:"pre_auth_token"`
+}
+
+type TOTPInitiateResponse struct {
+	OTPAuthURL          string `json:"otp_auth_url"`
+	OTPAuthURLSignature string `json:"otp_auth_url_signature"`
+	QRCode              string `json:"qr_code"`
+}
+
+// Claims is  a struct that will be encoded to a JWT.
+// jwt.StandardClaims is an embedded type to provide expiry time
+type Claims struct {
+	ID         string
+	MacAddress string
+	Network    string
+	jwt.RegisteredClaims
+}
+
+// SuccessfulLoginResponse is struct to send the request response
+type SuccessfulLoginResponse struct {
+	ID        string
+	AuthToken string
+}
+
+// ErrorResponse is struct for error
+type ErrorResponse struct {
+	Code     int
+	Message  string
+	Response interface{}
+}
+
+// NodeAuth - struct for node auth
+type NodeAuth struct {
+	Network    string
+	Password   string
+	MacAddress string // Depricated
+	ID         string
+}
+
+// SuccessResponse is struct for sending error message with code.
+type SuccessResponse struct {
+	Code     int
+	Message  string
+	Response interface{}
+}
+
+// DisplayKey - what is displayed for key
+type DisplayKey struct {
+	Name string `json:"name" bson:"name"`
+	Uses int    `json:"uses" bson:"uses"`
+}
+
+// GlobalConfig - global config
+type GlobalConfig struct {
+	Name string `json:"name" bson:"name"`
+}
+
+// CheckInResponse - checkin response
+type CheckInResponse struct {
+	Success          bool   `json:"success" bson:"success"`
+	NeedPeerUpdate   bool   `json:"needpeerupdate" bson:"needpeerupdate"`
+	NeedConfigUpdate bool   `json:"needconfigupdate" bson:"needconfigupdate"`
+	NeedKeyUpdate    bool   `json:"needkeyupdate" bson:"needkeyupdate"`
+	NeedDelete       bool   `json:"needdelete" bson:"needdelete"`
+	NodeMessage      string `json:"nodemessage" bson:"nodemessage"`
+	IsPending        bool   `json:"ispending" bson:"ispending"`
+}
+
+// PeersResponse - peers response
+type PeersResponse struct {
+	PublicKey           string `json:"publickey" bson:"publickey"`
+	Endpoint            string `json:"endpoint" bson:"endpoint"`
+	Address             string `json:"address" bson:"address"`
+	Address6            string `json:"address6" bson:"address6"`
+	LocalAddress        string `json:"localaddress" bson:"localaddress"`
+	LocalListenPort     int32  `json:"locallistenport" bson:"locallistenport"`
+	IsEgressGateway     string `json:"isegressgateway" bson:"isegressgateway"`
+	EgressGatewayRanges string `json:"egressgatewayrange" bson:"egressgatewayrange"`
+	ListenPort          int32  `json:"listenport" bson:"listenport"`
+	KeepAlive           int32  `json:"persistentkeepalive" bson:"persistentkeepalive"`
+}
+
+// ExtPeersResponse - ext peers response
+type ExtPeersResponse struct {
+	PublicKey       string `json:"publickey" bson:"publickey"`
+	Endpoint        string `json:"endpoint" bson:"endpoint"`
+	Address         string `json:"address" bson:"address"`
+	Address6        string `json:"address6" bson:"address6"`
+	LocalAddress    string `json:"localaddress" bson:"localaddress"`
+	LocalListenPort int32  `json:"locallistenport" bson:"locallistenport"`
+	ListenPort      int32  `json:"listenport" bson:"listenport"`
+	KeepAlive       int32  `json:"persistentkeepalive" bson:"persistentkeepalive"`
+}
+
+type EgressRangeMetric struct {
+	// EgressID is the ID of the egress gateway that this EgressRangeMetric originated
+	// from. Might not be always set.
+	EgressID string `json:"-"`
+	// EgressName is the name of the egress gateway identified by EgressID. Might not be always set.
+	EgressName     string        `json:"-"`
+	Network        string        `json:"network"`
+	VirtualNetwork string        `json:"virtual_network"`
+	RouteMetric    uint32        `json:"route_metric"` // preffered range 1-999
+	Nat            bool          `json:"nat"`
+	Mode           EgressNATMode `json:"nat_mode"`
+}
+
+// EgressGatewayRequest - egress gateway request
+type EgressGatewayRequest struct {
+	NodeID           string              `json:"nodeid" bson:"nodeid"`
+	NetID            string              `json:"netid" bson:"netid"`
+	NatEnabled       string              `json:"natenabled" bson:"natenabled"`
+	Ranges           []string            `json:"ranges" bson:"ranges"`
+	RangesWithMetric []EgressRangeMetric `json:"ranges_with_metric"`
+}
+
+// RelayRequest - relay request struct
+type RelayRequest struct {
+	NodeID       string   `json:"nodeid"`
+	NetID        string   `json:"netid"`
+	RelayedNodes []string `json:"relayaddrs"`
+}
+
+// HostRelayRequest - struct for host relay creation
+type HostRelayRequest struct {
+	HostID       string   `json:"host_id"`
+	RelayedHosts []string `json:"relayed_hosts"`
+}
+
+// IngressRequest - ingress request struct
+type IngressRequest struct {
+	ExtclientDNS        string `json:"extclientdns"`
+	IsInternetGateway   bool   `json:"is_internet_gw"`
+	Metadata            string `json:"metadata"`
+	PersistentKeepalive int32  `json:"persistentkeepalive"`
+	MTU                 int32  `json:"mtu"`
+}
+
+// InetNodeReq - exit node request struct
+type InetNodeReq struct {
+	InetNodeClientIDs []string `json:"inet_node_client_ids"`
+}
+
+// ServerUpdateData - contains data to configure server
+// and if it should set peers
+type ServerUpdateData struct {
+	UpdatePeers bool       `json:"updatepeers" bson:"updatepeers"`
+	Node        LegacyNode `json:"servernode" bson:"servernode"`
+}
+
+// Telemetry - contains UUID of the server and timestamp of last send to posthog
+// also contains assymetrical encryption pub/priv keys for any server traffic
+type Telemetry struct {
+	UUID           string `json:"uuid" bson:"uuid"`
+	LastSend       int64  `json:"lastsend" bson:"lastsend" swaggertype:"primitive,integer" format:"int64"`
+	TrafficKeyPriv []byte `json:"traffickeypriv" bson:"traffickeypriv"`
+	TrafficKeyPub  []byte `json:"traffickeypub" bson:"traffickeypub"`
+}
+
+// ServerAddr - to pass to clients to tell server addresses and if it's the leader or not
+type ServerAddr struct {
+	IsLeader bool   `json:"isleader" bson:"isleader" yaml:"isleader"`
+	Address  string `json:"address" bson:"address" yaml:"address"`
+}
+
+// TrafficKeys - struct to hold public keys
+type TrafficKeys struct {
+	Mine   []byte `json:"mine" bson:"mine" yaml:"mine"`
+	Server []byte `json:"server" bson:"server" yaml:"server"`
+}
+
+// HostPull - response of a host's pull
+type HostPull struct {
+	Host               Host                    `json:"host" yaml:"host"`
+	Nodes              []Node                  `json:"nodes" yaml:"nodes"`
+	Peers              []wgtypes.PeerConfig    `json:"peers" yaml:"peers"`
+	ServerConfig       ServerConfig            `json:"server_config" yaml:"server_config"`
+	PeerIDs            PeerMap                 `json:"peer_ids,omitempty" yaml:"peer_ids,omitempty"`
+	HostNetworkInfo    HostInfoMap             `json:"host_network_info,omitempty"  yaml:"host_network_info,omitempty"`
+	EgressRoutes       []EgressNetworkRoutes   `json:"egress_network_routes"`
+	FwUpdate           FwUpdate                `json:"fw_update"`
+	ChangeDefaultGw    bool                    `json:"change_default_gw"`
+	DefaultGwIp        net.IP                  `json:"default_gw_ip"`
+	IsInternetGw       bool                    `json:"is_inet_gw"`
+	EndpointDetection  bool                    `json:"endpoint_detection"`
+	NameServers        []string                `json:"name_servers"`
+	EgressWithDomains  []EgressDomain          `json:"egress_with_domains"`
+	DnsNameservers     []Nameserver            `json:"dns_nameservers"`
+	AutoRelayNodes     map[NetworkID][]Node    `json:"auto_relay_nodes"`
+	GwNodes            map[NetworkID][]Node    `json:"gw_nodes"`
+	ReplacePeers       bool                    `json:"replace_peers"`
+	AddressIdentityMap map[string]PeerIdentity `json:"address_identity_map"`
+}
+
+// NodeGet - struct for a single node get response
+type NodeGet struct {
+	Node         Node                 `json:"node" bson:"node" yaml:"node"`
+	Host         Host                 `json:"host" yaml:"host"`
+	Peers        []wgtypes.PeerConfig `json:"peers" bson:"peers" yaml:"peers"`
+	HostPeers    []wgtypes.PeerConfig `json:"host_peers" bson:"host_peers" yaml:"host_peers"`
+	ServerConfig ServerConfig         `json:"serverconfig" bson:"serverconfig" yaml:"serverconfig"`
+	PeerIDs      PeerMap              `json:"peerids,omitempty" bson:"peerids,omitempty" yaml:"peerids,omitempty"`
+}
+
+// NodeJoinResponse data returned to node in response to join
+type NodeJoinResponse struct {
+	Node         Node                 `json:"node" bson:"node" yaml:"node"`
+	Host         Host                 `json:"host" yaml:"host"`
+	ServerConfig ServerConfig         `json:"serverconfig" bson:"serverconfig" yaml:"serverconfig"`
+	Peers        []wgtypes.PeerConfig `json:"peers" bson:"peers" yaml:"peers"`
+}
+
+// ServerConfig - struct for dealing with the server information for a netclient
+type ServerConfig struct {
+	CoreDNSAddr                 string `yaml:"corednsaddr"`
+	API                         string `yaml:"api"`
+	APIHost                     string `yaml:"apihost"`
+	APIPort                     string `yaml:"apiport"`
+	GRPC                        string `yaml:"grpc"`
+	DNSMode                     string `yaml:"dnsmode"`
+	Version                     string `yaml:"version"`
+	MQPort                      string `yaml:"mqport"`
+	MQUserName                  string `yaml:"mq_username"`
+	MQPassword                  string `yaml:"mq_password"`
+	BrokerType                  string `yaml:"broker_type"`
+	Server                      string `yaml:"server"`
+	Broker                      string `yaml:"broker"`
+	IsPro                       bool   `yaml:"isee" json:"Is_EE"`
+	TrafficKey                  []byte `yaml:"traffickey"`
+	MetricInterval              string `yaml:"metric_interval"`
+	MetricsPort                 int    `yaml:"metrics_port"`
+	IPDetectionInterval         int    `yaml:"ip_detection_interval"`
+	ManageDNS                   bool   `yaml:"manage_dns"`
+	Stun                        bool   `yaml:"stun"`
+	StunServers                 string `yaml:"stun_servers"`
+	EndpointDetection           bool   `yaml:"endpoint_detection"`
+	DefaultDomain               string `yaml:"default_domain"`
+	PeerConnectionCheckInterval string `yaml:"peer_connection_check_interval"`
+	OldAClsSupport              bool   `json:"-"`
+}
+
+// User.NameInCharset - returns if name is in charset below or not
+func (user *User) NameInCharSet() bool {
+	charset := "abcdefghijklmnopqrstuvwxyz1234567890-."
+	for _, char := range user.UserName {
+		if !strings.Contains(charset, strings.ToLower(string(char))) {
+			return false
+		}
+	}
+	return true
+}
+
+// ServerIDs - struct to hold server ids.
+type ServerIDs struct {
+	ServerIDs []string `json:"server_ids"`
+}
+
+// JoinData - struct to hold data required for node to join a network on server
+type JoinData struct {
+	Host Host   `json:"host" yaml:"host"`
+	Node Node   `json:"node" yaml:"node"`
+	Key  string `json:"key" yaml:"key"`
+}
+
+// HookFunc - function type for hooks that can accept optional parameters
+type HookFunc func(...interface{}) error
+
+// HookDetails - struct to hold hook info
+type HookDetails struct {
+	ID       string        // Unique identifier for the hook (optional, auto-generated if empty)
+	Hook     HookFunc      // Hook function that accepts optional variadic parameters
+	Params   []interface{} // Optional parameters to pass to the hook function
+	Interval time.Duration
+}
+
+// HookCommandType - type of command for hook management
+type HookCommandType int
+
+const (
+	HookCommandReset HookCommandType = iota
+	HookCommandStop
+	HookCommandRestart
+)
+
+// HookCommand - command to control a hook
+type HookCommand struct {
+	ID       string // Hook ID to target
+	Command  HookCommandType
+	Interval time.Duration // Optional: new interval for restart command (0 means use existing)
+}
+
+// LicenseLimits - struct license limits
+type LicenseLimits struct {
+	Servers  int `json:"servers"`
+	Users    int `json:"users"`
+	Hosts    int `json:"hosts"`
+	Clients  int `json:"clients"`
+	Networks int `json:"networks"`
+}
+
+type SignInReqDto struct {
+	FormFields FormFields `json:"formFields"`
+}
+
+type FormField struct {
+	Id    string `json:"id"`
+	Value any    `json:"value"`
+}
+
+type FormFields []FormField
+
+type SignInResDto struct {
+	Status string `json:"status"`
+	User   User   `json:"user"`
+}
+
+type TenantLoginResDto struct {
+	Code     int    `json:"code"`
+	Message  string `json:"message"`
+	Response struct {
+		UserName  string `json:"UserName"`
+		AuthToken string `json:"AuthToken"`
+	} `json:"response"`
+}
+
+type SsoLoginReqDto struct {
+	OauthProvider string `json:"oauthprovider"`
+}
+
+type SsoLoginResDto struct {
+	User      string `json:"UserName"`
+	AuthToken string `json:"AuthToken"`
+}
+
+type SsoLoginData struct {
+	Expiration     time.Time `json:"expiration"`
+	OauthProvider  string    `json:"oauthprovider,omitempty"`
+	OauthCode      string    `json:"oauthcode,omitempty"`
+	Username       string    `json:"username,omitempty"`
+	AmbAccessToken string    `json:"ambaccesstoken,omitempty"`
+}
+
+type LoginReqDto struct {
+	Email    string `json:"email"`
+	TenantID string `json:"tenant_id"`
+}
+
+const (
+	ResHeaderKeyStAccessToken = "St-Access-Token"
+)
+
+type GetClientConfReqDto struct {
+	PreferredIp string `json:"preferred_ip"`
+}
+
+type RsrcURLInfo struct {
+	Method string
+	Path   string
+}
+
+type IDPSyncStatus struct {
+	// Status would be one of: in_progress, completed or failed.
+	Status string `json:"status"`
+	// Description is empty if the sync is ongoing or completed,
+	// and describes the error when the sync fails.
+	Description string `json:"description"`
+}
+
+type IDPSyncTestRequest struct {
+	AuthProvider      string `json:"auth_provider"`
+	ClientID          string `json:"client_id"`
+	ClientSecret      string `json:"client_secret"`
+	AzureTenantID     string `json:"azure_tenant_id"`
+	GoogleAdminEmail  string `json:"google_admin_email"`
+	GoogleSACredsJson string `json:"google_sa_creds_json"`
+	OktaOrgURL        string `json:"okta_org_url"`
+	OktaAPIToken      string `json:"okta_api_token"`
+}
+
+type PostureCheckDeviceInfo struct {
+	ClientLocation string
+	ClientVersion  string
+	OS             string
+	OSFamily       string
+	OSVersion      string
+	KernelVersion  string
+	AutoUpdate     bool
+	Tags           map[TagID]struct{}
+	IsUser         bool
+	UserGroups     map[UserGroupID]struct{}
+}
+
+type Violation struct {
+	CheckID   string   `json:"check_id"`
+	Name      string   `json:"name"`
+	Attribute string   `json:"attribute"`
+	Message   string   `json:"message"`
+	Severity  Severity `json:"severity"`
+}
+
+type Severity int
+
+const (
+	SeverityUnknown Severity = iota
+	SeverityLow
+	SeverityMedium
+	SeverityHigh
+	SeverityCritical
+)

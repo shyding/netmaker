@@ -1,0 +1,1729 @@
+package controller
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"image/png"
+	"net/http"
+	"reflect"
+	"time"
+
+	"github.com/pquerna/otp"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+	"github.com/gravitl/netmaker/auth"
+	"github.com/gravitl/netmaker/logger"
+	"github.com/gravitl/netmaker/logic"
+	"github.com/gravitl/netmaker/models"
+	"github.com/gravitl/netmaker/mq"
+	"github.com/gravitl/netmaker/schema"
+	"github.com/gravitl/netmaker/servercfg"
+	"github.com/pquerna/otp/totp"
+	"golang.org/x/exp/slog"
+)
+
+var (
+	upgrader = websocket.Upgrader{}
+)
+
+var ListRoles = listRoles
+
+func userHandlers(r *mux.Router) {
+	r.HandleFunc("/api/users/adm/hassuperadmin", hasSuperAdmin).Methods(http.MethodGet)
+	r.HandleFunc("/api/users/adm/createsuperadmin", createSuperAdmin).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/adm/transfersuperadmin/{username}", logic.SecurityCheck(true, http.HandlerFunc(transferSuperAdmin))).
+		Methods(http.MethodPost)
+	r.HandleFunc("/api/users/adm/authenticate", authenticateUser).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/validate-identity", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(validateUserIdentity)))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/auth/init-totp", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(initiateTOTPSetup)))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/auth/complete-totp", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(completeTOTPSetup)))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/auth/verify-totp", logic.PreAuthCheck(logic.ContinueIfUserMatch(http.HandlerFunc(verifyTOTP)))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}", logic.SecurityCheck(true, http.HandlerFunc(updateUser))).Methods(http.MethodPut)
+	r.HandleFunc("/api/users/{username}", logic.SecurityCheck(true, checkFreeTierLimits(limitChoiceUsers, http.HandlerFunc(createUser)))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}", logic.SecurityCheck(true, http.HandlerFunc(deleteUser))).Methods(http.MethodDelete)
+	r.HandleFunc("/api/users/{username}", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(getUser)))).Methods(http.MethodGet)
+	r.HandleFunc("/api/users/{username}/enable", logic.SecurityCheck(true, http.HandlerFunc(enableUserAccount))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/disable", logic.SecurityCheck(true, http.HandlerFunc(disableUserAccount))).Methods(http.MethodPost)
+	r.HandleFunc("/api/users/{username}/settings", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(getUserSettings)))).Methods(http.MethodGet)
+	r.HandleFunc("/api/users/{username}/settings", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(updateUserSettings)))).Methods(http.MethodPut)
+	r.HandleFunc("/api/v1/users", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(getUserV1)))).Methods(http.MethodGet)
+	r.HandleFunc("/api/users", logic.SecurityCheck(true, http.HandlerFunc(getUsers))).Methods(http.MethodGet)
+	r.HandleFunc("/api/v1/users/roles", logic.SecurityCheck(true, http.HandlerFunc(ListRoles))).Methods(http.MethodGet)
+	r.HandleFunc("/api/v1/users/access_token", logic.SecurityCheck(true, http.HandlerFunc(createUserAccessToken))).Methods(http.MethodPost)
+	r.HandleFunc("/api/v1/users/access_token", logic.SecurityCheck(true, http.HandlerFunc(getUserAccessTokens))).Methods(http.MethodGet)
+	r.HandleFunc("/api/v1/users/access_token", logic.SecurityCheck(true, http.HandlerFunc(deleteUserAccessTokens))).Methods(http.MethodDelete)
+	r.HandleFunc("/api/v1/users/logout", logic.SecurityCheck(false, logic.ContinueIfUserMatch(http.HandlerFunc(logout)))).Methods(http.MethodPost)
+}
+
+// @Summary     Create a user API access token
+// @Router      /api/v1/users/access_token [post]
+// @Tags        Users
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       body body schema.UserAccessToken true "Access token request"
+// @Success     200 {object} models.SuccessfulUserLoginResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     401 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func createUserAccessToken(w http.ResponseWriter, r *http.Request) {
+
+	// Auth request consists of Mac Address and Password (from node that is authorizing
+	// in case of Master, auth is ignored and mac is set to "mastermac"
+	var req schema.UserAccessToken
+
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Log(0, "error decoding request body: ",
+			err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, logic.BadReq))
+		return
+	}
+	if req.Name == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("name is required"), logic.BadReq))
+		return
+	}
+	if req.UserName == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("username is required"), logic.BadReq))
+		return
+	}
+	caller, err := logic.GetUser(r.Header.Get("user"))
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, logic.UnAuthorized))
+		return
+	}
+	user, err := logic.GetUser(req.UserName)
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, logic.UnAuthorized))
+		return
+	}
+	if caller.UserName != user.UserName && caller.PlatformRoleID != models.SuperAdminRole {
+		if caller.PlatformRoleID == models.AdminRole {
+			if user.PlatformRoleID == models.SuperAdminRole || user.PlatformRoleID == models.AdminRole {
+				logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("not enough permissions to create token for user "+user.UserName), logic.Forbidden_Msg))
+				return
+			}
+		} else {
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("not enough permissions to create token for user "+user.UserName), logic.Forbidden_Msg))
+			return
+		}
+	}
+
+	req.ID = uuid.New().String()
+	req.CreatedBy = r.Header.Get("user")
+	req.CreatedAt = time.Now()
+	jwt, err := logic.CreateUserAccessJwtToken(user.UserName, user.PlatformRoleID, req.ExpiresAt, req.ID)
+	if jwt == "" {
+		// very unlikely that err is !nil and no jwt returned, but handle it anyways.
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(errors.New("error creating access token "+err.Error()), logic.Internal),
+		)
+		return
+	}
+	err = req.Create(r.Context())
+	if err != nil {
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(errors.New("error creating access token "+err.Error()), logic.Internal),
+		)
+		return
+	}
+	logic.LogEvent(&models.Event{
+		Action: models.Create,
+		Source: models.Subject{
+			ID:   caller.UserName,
+			Name: caller.UserName,
+			Type: models.UserSub,
+		},
+		TriggeredBy: caller.UserName,
+		Target: models.Subject{
+			ID:   req.ID,
+			Name: req.Name,
+			Type: models.UserAccessTokenSub,
+			Info: req,
+		},
+		Origin: models.Dashboard,
+	})
+	logic.ReturnSuccessResponseWithJson(w, r, models.SuccessfulUserLoginResponse{
+		AuthToken: jwt,
+		UserName:  req.UserName,
+	}, "api access token has generated for user "+req.UserName)
+}
+
+// @Summary     Get user access tokens
+// @Router      /api/v1/users/access_token [get]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username query string true "Username"
+// @Success     200 {array} schema.UserAccessToken
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     401 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func getUserAccessTokens(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("username is required"), "badrequest"))
+		return
+	}
+	logic.ReturnSuccessResponseWithJson(w, r, (&schema.UserAccessToken{UserName: username}).ListByUser(r.Context()), "fetched api access tokens for user "+username)
+}
+
+// @Summary     Delete user access tokens
+// @Router      /api/v1/users/access_token [delete]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       id query string true "Token ID"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     401 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func deleteUserAccessTokens(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("id is required"), "badrequest"))
+		return
+	}
+	a := schema.UserAccessToken{
+		ID: id,
+	}
+	err := a.Get(r.Context())
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("token does not exist"), "badrequest"))
+		return
+	}
+	caller, err := logic.GetUser(r.Header.Get("user"))
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "unauthorized"))
+		return
+	}
+	user, err := logic.GetUser(a.UserName)
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "unauthorized"))
+		return
+	}
+	if caller.UserName != user.UserName && caller.PlatformRoleID != models.SuperAdminRole {
+		if caller.PlatformRoleID == models.AdminRole {
+			if user.PlatformRoleID == models.SuperAdminRole || user.PlatformRoleID == models.AdminRole {
+				logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("not enough permissions to delete token of user "+user.UserName), logic.Forbidden_Msg))
+				return
+			}
+		} else {
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("not enough permissions to delete token of user "+user.UserName), logic.Forbidden_Msg))
+			return
+		}
+	}
+
+	err = (&schema.UserAccessToken{ID: id}).Delete(r.Context())
+	if err != nil {
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(errors.New("error deleting access token "+err.Error()), "internal"),
+		)
+		return
+	}
+	logic.LogEvent(&models.Event{
+		Action: models.Delete,
+		Source: models.Subject{
+			ID:   caller.UserName,
+			Name: caller.UserName,
+			Type: models.UserSub,
+		},
+		TriggeredBy: caller.UserName,
+		Target: models.Subject{
+			ID:   a.ID,
+			Name: a.Name,
+			Type: models.UserAccessTokenSub,
+			Info: a,
+		},
+		Origin: models.Dashboard,
+		Diff: models.Diff{
+			Old: a,
+			New: nil,
+		},
+	})
+	logic.ReturnSuccessResponseWithJson(w, r, nil, "revoked access token")
+}
+
+// @Summary     Authenticate a user to retrieve an authorization token
+// @Router      /api/users/adm/authenticate [post]
+// @Tags        Auth
+// @Accept      json
+// @Produce     json
+// @Param       body body models.UserAuthParams true "Authentication parameters"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     401 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func authenticateUser(response http.ResponseWriter, request *http.Request) {
+	appName := request.Header.Get("X-Application-Name")
+	if appName == "" {
+		appName = logic.NetmakerDesktopApp
+	}
+
+	// Auth request consists of Mac Address and Password (from node that is authorizing
+	// in case of Master, auth is ignored and mac is set to "mastermac"
+	var authRequest models.UserAuthParams
+	var errorResponse = models.ErrorResponse{
+		Code: http.StatusInternalServerError, Message: "W1R3: It's not you it's me.",
+	}
+	decoder := json.NewDecoder(request.Body)
+	decoderErr := decoder.Decode(&authRequest)
+	defer request.Body.Close()
+	if decoderErr != nil {
+		logger.Log(0, "error decoding request body: ",
+			decoderErr.Error())
+		logic.ReturnErrorResponse(response, request, errorResponse)
+		return
+	}
+	user, err := logic.GetUser(authRequest.UserName)
+	if err != nil {
+		logger.Log(0, authRequest.UserName, "user validation failed: ",
+			err.Error())
+		logic.ReturnErrorResponse(response, request, logic.FormatError(err, "unauthorized"))
+		return
+	}
+	if logic.IsOauthUser(user) == nil {
+		logic.ReturnErrorResponse(response, request, logic.FormatError(errors.New("user is registered via SSO"), "badrequest"))
+		return
+	}
+
+	if user.AccountDisabled {
+		err = errors.New("user account disabled")
+		logic.ReturnErrorResponse(response, request, logic.FormatError(err, "unauthorized"))
+		return
+	}
+
+	if user.PlatformRoleID != models.SuperAdminRole && !logic.IsBasicAuthEnabled() {
+		logic.ReturnErrorResponse(
+			response,
+			request,
+			logic.FormatError(fmt.Errorf("basic auth is disabled"), "badrequest"),
+		)
+		return
+	}
+
+	if val := request.Header.Get("From-Ui"); val == "true" {
+		// request came from UI, if normal user block Login
+
+		role, err := logic.GetRole(user.PlatformRoleID)
+		if err != nil {
+			logic.ReturnErrorResponse(response, request, logic.FormatError(errors.New("access denied to dashboard"), "unauthorized"))
+			return
+		}
+		if role.DenyDashboardAccess {
+			logic.ReturnErrorResponse(response, request, logic.FormatError(errors.New("access denied to dashboard"), "unauthorized"))
+			return
+		}
+	}
+
+	username := authRequest.UserName
+	jwt, err := logic.VerifyAuthRequest(authRequest, appName)
+	if err != nil {
+		logger.Log(0, username, "user validation failed: ",
+			err.Error())
+		logic.ReturnErrorResponse(response, request, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if jwt == "" {
+		// very unlikely that err is !nil and no jwt returned, but handle it anyways.
+		logger.Log(0, username, "jwt token is empty")
+		logic.ReturnErrorResponse(
+			response,
+			request,
+			logic.FormatError(errors.New("no token returned"), "internal"),
+		)
+		return
+	}
+
+	var successResponse models.SuccessResponse
+
+	if user.IsMFAEnabled {
+		successResponse = models.SuccessResponse{
+			Code:    http.StatusOK,
+			Message: "W1R3: TOTP required",
+			Response: models.PartialUserLoginResponse{
+				UserName:     username,
+				PreAuthToken: jwt,
+			},
+		}
+	} else {
+		successResponse = models.SuccessResponse{
+			Code:    http.StatusOK,
+			Message: "W1R3: Device " + username + " Authorized",
+			Response: models.SuccessfulUserLoginResponse{
+				UserName:  username,
+				AuthToken: jwt,
+			},
+		}
+	}
+
+	// Send back the JWT
+	successJSONResponse, jsonError := json.Marshal(successResponse)
+	if jsonError != nil {
+		logger.Log(0, username,
+			"error marshalling resp: ", jsonError.Error())
+		logic.ReturnErrorResponse(response, request, errorResponse)
+		return
+	}
+	logger.Log(2, username, "was authenticated")
+
+	// log user activity
+	if !user.IsMFAEnabled {
+		if val := request.Header.Get("From-Ui"); val == "true" {
+			logic.LogEvent(&models.Event{
+				Action: models.Login,
+				Source: models.Subject{
+					ID:   user.UserName,
+					Name: user.UserName,
+					Type: models.UserSub,
+				},
+				TriggeredBy: user.UserName,
+				Target: models.Subject{
+					ID:   models.DashboardSub.String(),
+					Name: models.DashboardSub.String(),
+					Type: models.DashboardSub,
+				},
+				Origin: models.Dashboard,
+			})
+		} else {
+			logic.LogEvent(&models.Event{
+				Action: models.Login,
+				Source: models.Subject{
+					ID:   user.UserName,
+					Name: user.UserName,
+					Type: models.UserSub,
+				},
+				TriggeredBy: user.UserName,
+				Target: models.Subject{
+					ID:   models.ClientAppSub.String(),
+					Name: models.ClientAppSub.String(),
+					Type: models.ClientAppSub,
+				},
+				Origin: models.ClientApp,
+			})
+		}
+	}
+
+	response.Header().Set("Content-Type", "application/json")
+	response.Write(successJSONResponse)
+
+}
+
+// @Summary     Validate a user's identity
+// @Router      /api/users/{username}/validate-identity [post]
+// @Tags        Users
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username"
+// @Param       body body models.UserIdentityValidationRequest true "User Identity Validation Request"
+// @Success     200 {object} models.UserIdentityValidationResponse
+// @Failure     400 {object} models.ErrorResponse
+func validateUserIdentity(w http.ResponseWriter, r *http.Request) {
+	username := r.Header.Get("user")
+
+	var req models.UserIdentityValidationRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Log(0, "failed to decode request body: ", err.Error())
+		err = fmt.Errorf("invalid request body: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to get user: ", err.Error())
+		err = fmt.Errorf("user not found: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	var resp models.UserIdentityValidationResponse
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password))
+	if err != nil {
+		logic.ReturnSuccessResponseWithJson(w, r, resp, "user identity validation failed")
+	} else {
+		resp.IdentityValidated = true
+		logic.ReturnSuccessResponseWithJson(w, r, resp, "user identity validated")
+	}
+}
+
+// @Summary     Initiate setting up TOTP 2FA for a user
+// @Router      /api/users/{username}/auth/init-totp [post]
+// @Tags        Auth
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username"
+// @Success     200 {object} models.TOTPInitiateResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func initiateTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	username := r.Header.Get("user")
+
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to get user: ", err.Error())
+		err = fmt.Errorf("user not found: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if user.AuthType == models.OAuth {
+		err = fmt.Errorf("auth type is %s, cannot process totp setup", user.AuthType)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "Netmaker",
+		AccountName: username,
+	})
+	if err != nil {
+		err = fmt.Errorf("failed to generate totp key: %v", err)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	qrCodeImg, err := key.Image(200, 200)
+	if err != nil {
+		err = fmt.Errorf("failed to generate totp key: %v", err)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	var qrCodePng bytes.Buffer
+	err = png.Encode(&qrCodePng, qrCodeImg)
+	if err != nil {
+		err = fmt.Errorf("failed to generate totp key: %v", err)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	qrCode := "data:image/png;base64," + base64.StdEncoding.EncodeToString(qrCodePng.Bytes())
+
+	logic.ReturnSuccessResponseWithJson(w, r, models.TOTPInitiateResponse{
+		OTPAuthURL:          key.URL(),
+		OTPAuthURLSignature: logic.GenerateOTPAuthURLSignature(key.URL()),
+		QRCode:              qrCode,
+	}, "totp setup initiated")
+}
+
+// @Summary     Verify and complete setting up TOTP 2FA for a user
+// @Router      /api/users/{username}/auth/complete-totp [post]
+// @Tags        Auth
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username"
+// @Param       body body models.UserTOTPVerificationParams true "TOTP verification parameters"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func completeTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	username := r.Header.Get("user")
+
+	var req models.UserTOTPVerificationParams
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Log(0, "failed to decode request body: ", err.Error())
+		err = fmt.Errorf("invalid request body: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if !logic.VerifyOTPAuthURL(req.OTPAuthURL, req.OTPAuthURLSignature) {
+		err = fmt.Errorf("otp auth url signature mismatch")
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to get user: ", err.Error())
+		err = fmt.Errorf("user not found: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if user.AuthType == models.OAuth {
+		err = fmt.Errorf("auth type is %s, cannot process totp setup", user.AuthType)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	otpAuthURL, err := otp.NewKeyFromURL(req.OTPAuthURL)
+	if err != nil {
+		err = fmt.Errorf("error parsing otp auth url: %v", err)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	totpSecret := otpAuthURL.Secret()
+
+	if totp.Validate(req.TOTP, totpSecret) {
+		user.IsMFAEnabled = true
+		user.TOTPSecret = totpSecret
+		err = logic.UpsertUser(*user)
+		if err != nil {
+			err = fmt.Errorf("error upserting user: %v", err)
+			logger.Log(0, err.Error())
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+			return
+		}
+
+		logic.LogEvent(&models.Event{
+			Action: models.EnableMFA,
+			Source: models.Subject{
+				ID:   user.UserName,
+				Name: user.UserName,
+				Type: models.UserSub,
+			},
+			TriggeredBy: user.UserName,
+			Target: models.Subject{
+				ID:   user.UserName,
+				Name: user.UserName,
+				Type: models.UserSub,
+			},
+			Origin: models.Dashboard,
+		})
+
+		logic.ReturnSuccessResponse(w, r, fmt.Sprintf("totp setup complete for user %s", username))
+	} else {
+		err = fmt.Errorf("cannot setup totp for user %s: invalid otp", username)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+	}
+}
+
+// @Summary     Verify a user's TOTP token
+// @Router      /api/users/{username}/auth/verify-totp [post]
+// @Tags        Auth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username"
+// @Param       body body models.UserTOTPVerificationParams true "TOTP verification parameters"
+// @Success     200 {object} models.SuccessfulUserLoginResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     401 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func verifyTOTP(w http.ResponseWriter, r *http.Request) {
+	username := r.Header.Get("user")
+
+	appName := r.Header.Get("X-Application-Name")
+	if appName == "" {
+		appName = logic.NetmakerDesktopApp
+	}
+
+	var req models.UserTOTPVerificationParams
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Log(0, "failed to decode request body: ", err.Error())
+		err = fmt.Errorf("invalid request body: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to get user: ", err.Error())
+		err = fmt.Errorf("user not found: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if !user.IsMFAEnabled {
+		err = fmt.Errorf("mfa is disabled for user(%s), cannot process totp verification", username)
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if totp.Validate(req.TOTP, user.TOTPSecret) {
+		jwt, err := logic.CreateUserJWT(user.UserName, user.PlatformRoleID, appName)
+		if err != nil {
+			err = fmt.Errorf("error creating token: %v", err)
+			logger.Log(0, err.Error())
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+			return
+		}
+
+		// update last login time
+		user.LastLoginTime = time.Now().UTC()
+		err = logic.UpsertUser(*user)
+		if err != nil {
+			err = fmt.Errorf("error upserting user: %v", err)
+			logger.Log(0, err.Error())
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+			return
+		}
+
+		logic.LogEvent(&models.Event{
+			Action: models.Login,
+			Source: models.Subject{
+				ID:   user.UserName,
+				Name: user.UserName,
+				Type: models.UserSub,
+			},
+			TriggeredBy: user.UserName,
+			Target: models.Subject{
+				ID:   models.DashboardSub.String(),
+				Name: models.DashboardSub.String(),
+				Type: models.DashboardSub,
+			},
+			Origin: models.Dashboard,
+		})
+
+		logic.ReturnSuccessResponseWithJson(w, r, models.SuccessfulUserLoginResponse{
+			UserName:  username,
+			AuthToken: jwt,
+		}, "W1R3: User "+username+" Authorized")
+	} else {
+		err = fmt.Errorf("invalid otp")
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "unauthorized"))
+	}
+}
+
+// @Summary     Check if the server has a super admin
+// @Router      /api/users/adm/hassuperadmin [get]
+// @Tags        Users
+// @Produce     json
+// @Success     200 {object} bool
+// @Failure     500 {object} models.ErrorResponse
+func hasSuperAdmin(w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Content-Type", "application/json")
+
+	hasSuperAdmin, err := logic.HasSuperAdmin()
+	if err != nil {
+		logger.Log(0, "failed to check for admin: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	json.NewEncoder(w).Encode(hasSuperAdmin)
+
+}
+
+// @Summary     Get an individual user
+// @Router      /api/users/{username} [get]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user to fetch"
+// @Success     200 {object} models.ReturnUser
+// @Failure     500 {object} models.ErrorResponse
+func getUser(w http.ResponseWriter, r *http.Request) {
+	// set header.
+	w.Header().Set("Content-Type", "application/json")
+
+	var params = mux.Vars(r)
+	usernameFetched := params["username"]
+	user, err := logic.GetReturnUser(usernameFetched)
+
+	if err != nil {
+		logger.Log(0, usernameFetched, "failed to fetch user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	logger.Log(2, r.Header.Get("user"), "fetched user", usernameFetched)
+	json.NewEncoder(w).Encode(user)
+}
+
+// @Summary     Enable a user's account
+// @Router      /api/users/{username}/enable [post]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user to enable"
+// @Param       force_enable_configs query string false "Force enable configs"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func enableUserAccount(w http.ResponseWriter, r *http.Request) {
+	username := mux.Vars(r)["username"]
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to fetch user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	var caller *models.User
+	var isMaster bool
+	if r.Header.Get("user") == logic.MasterUser {
+		isMaster = true
+	} else {
+		caller, err = logic.GetUser(r.Header.Get("user"))
+		if err != nil {
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+			return
+		}
+	}
+
+	if !isMaster && caller.UserName == user.UserName {
+		// This implies that a user is trying to enable themselves.
+		// This can never happen, since a disabled user cannot be
+		// authenticated.
+		err := fmt.Errorf("cannot enable self")
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	}
+
+	switch user.PlatformRoleID {
+	case models.SuperAdminRole:
+		// This can never happen, since a superadmin user cannot
+		// be disabled.
+	case models.AdminRole:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole {
+			err = fmt.Errorf("%s cannot enable an admin", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	case models.PlatformUser:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole && caller.PlatformRoleID != models.AdminRole {
+			err = fmt.Errorf("%s cannot enable a platform-user", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	case models.ServiceUser:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole && caller.PlatformRoleID != models.AdminRole {
+			err = fmt.Errorf("%s cannot enable a service-user", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	}
+
+	user.AccountDisabled = false
+	err = logic.UpsertUser(*user)
+	if err != nil {
+		logger.Log(0, "failed to enable user account: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+	}
+	go func() {
+		enableConfigs := r.URL.Query().Get("force_enable_configs") == "true"
+		if !enableConfigs {
+			return
+		}
+		extclients, err := logic.GetAllExtClients()
+		if err != nil {
+			logger.Log(0, "failed to get user extclients:", err.Error())
+			return
+		}
+		for _, extclient := range extclients {
+			if extclient.OwnerID == user.UserName && !extclient.Enabled {
+				_, err = logic.ToggleExtClientConnectivity(&extclient, true)
+				if err != nil {
+					logger.Log(1, "failed to delete user extclient:", err.Error())
+				}
+			}
+		}
+		mq.PublishPeerUpdate(false)
+	}()
+
+	logic.ReturnSuccessResponse(w, r, "user account enabled")
+}
+
+// @Summary     Disable a user's account
+// @Router      /api/users/{username}/disable [post]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user to disable"
+// @Param       force_disable_configs query string false "Force disable configs"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func disableUserAccount(w http.ResponseWriter, r *http.Request) {
+	username := mux.Vars(r)["username"]
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, "failed to fetch user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	var caller *models.User
+	var isMaster bool
+	if r.Header.Get("user") == logic.MasterUser {
+		isMaster = true
+	} else {
+		caller, err = logic.GetUser(r.Header.Get("user"))
+		if err != nil {
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+			return
+		}
+	}
+
+	if !isMaster && caller.UserName == user.UserName {
+		// This implies that a user is trying to disable themselves.
+		// This should not be allowed.
+		err = fmt.Errorf("cannot disable self")
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	}
+
+	switch user.PlatformRoleID {
+	case models.SuperAdminRole:
+		err = errors.New("cannot disable a super-admin")
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	case models.AdminRole:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole {
+			err = fmt.Errorf("%s cannot disable an admin", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	case models.PlatformUser:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole && caller.PlatformRoleID != models.AdminRole {
+			err = fmt.Errorf("%s cannot disable a platform-user", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	case models.ServiceUser:
+		if !isMaster && caller.PlatformRoleID != models.SuperAdminRole && caller.PlatformRoleID != models.AdminRole {
+			err = fmt.Errorf("%s cannot disable a service-user", caller.PlatformRoleID)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+	}
+
+	user.AccountDisabled = true
+	err = logic.UpsertUser(*user)
+	if err != nil {
+		logger.Log(0, "failed to disable user account: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+	}
+
+	go func() {
+		disableConfigs := r.URL.Query().Get("force_disable_configs") == "true"
+		if !disableConfigs {
+			return
+		}
+		extclients, err := logic.GetAllExtClients()
+		if err != nil {
+			logger.Log(0, "failed to get user extclients:", err.Error())
+			return
+		}
+		for _, extclient := range extclients {
+			if extclient.OwnerID == user.UserName {
+				_, err = logic.ToggleExtClientConnectivity(&extclient, false)
+				if err != nil {
+					logger.Log(1, "failed to delete user extclient:", err.Error())
+				} else {
+					err := mq.PublishDeletedClientPeerUpdate(&extclient)
+					if err != nil {
+						logger.Log(1, "failed to publish deleted client peer update:", err.Error())
+					}
+				}
+			}
+		}
+	}()
+
+	logic.ReturnSuccessResponse(w, r, "user account disabled")
+}
+
+// @Summary     Get a user's preferences and settings
+// @Router      /api/users/{username}/settings [get]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user"
+// @Success     200 {object} models.UserSettings
+func getUserSettings(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("user")
+	userSettings := logic.GetUserSettings(userID)
+	logic.ReturnSuccessResponseWithJson(w, r, userSettings, "fetched user settings")
+}
+
+// @Summary     Update a user's preferences and settings
+// @Router      /api/users/{username}/settings [put]
+// @Tags        Users
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username of the user"
+// @Param       body body models.UserSettings true "User settings"
+// @Success     200 {object} models.UserSettings
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func updateUserSettings(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("user")
+	var req models.UserSettings
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		logger.Log(0, "failed to decode request body: ", err.Error())
+		err = fmt.Errorf("invalid request body: %v", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	err = logic.UpsertUserSettings(userID, req)
+	if err != nil {
+		err = fmt.Errorf("failed to update user settings: %v", err.Error())
+		logger.Log(0, err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	logic.ReturnSuccessResponseWithJson(w, r, req, "updated user settings")
+}
+
+// @Summary     Get an individual user with role info
+// @Router      /api/v1/users [get]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username query string true "Username"
+// @Success     200 {object} models.ReturnUserWithRolesAndGroups
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func getUserV1(w http.ResponseWriter, r *http.Request) {
+	// set header.
+	w.Header().Set("Content-Type", "application/json")
+	usernameFetched := r.URL.Query().Get("username")
+	if usernameFetched == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("username is required"), "badrequest"))
+		return
+	}
+	user, err := logic.GetReturnUser(usernameFetched)
+	if err != nil {
+		logger.Log(0, usernameFetched, "failed to fetch user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	user.NumAccessTokens, _ = (&schema.UserAccessToken{
+		UserName: user.UserName,
+	}).CountByUser(r.Context())
+	userRoleTemplate, err := logic.GetRole(user.PlatformRoleID)
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	resp := models.ReturnUserWithRolesAndGroups{
+		ReturnUser:   user,
+		PlatformRole: userRoleTemplate,
+		UserGroups:   map[models.UserGroupID]models.UserGroup{},
+	}
+	for gId := range user.UserGroups {
+		grp, err := logic.GetUserGroup(gId)
+		if err == nil {
+			resp.UserGroups[gId] = grp
+		}
+	}
+	logger.Log(2, r.Header.Get("user"), "fetched user", usernameFetched)
+	logic.ReturnSuccessResponseWithJson(w, r, resp, "fetched user with role info")
+}
+
+// @Summary     Get all users
+// @Router      /api/users [get]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Success     200 {array} models.ReturnUser
+// @Failure     500 {object} models.ErrorResponse
+func getUsers(w http.ResponseWriter, r *http.Request) {
+	// set header.
+	w.Header().Set("Content-Type", "application/json")
+
+	users, err := logic.GetUsers()
+	if err != nil {
+		logger.Log(0, "failed to fetch users: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	for i := range users {
+		users[i].NumAccessTokens, _ = (&schema.UserAccessToken{
+			UserName: users[i].UserName,
+		}).CountByUser(r.Context())
+	}
+
+	logic.SortUsers(users[:])
+	logger.Log(2, r.Header.Get("user"), "fetched users")
+	json.NewEncoder(w).Encode(users)
+}
+
+// @Summary     Create a super admin
+// @Router      /api/users/adm/createsuperadmin [post]
+// @Tags        Users
+// @Accept      json
+// @Produce     json
+// @Param       body body models.User true "User details"
+// @Success     200 {object} models.ReturnUser
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func createSuperAdmin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var u models.User
+
+	err := json.NewDecoder(r.Body).Decode(&u)
+	if err != nil {
+		slog.Error("error decoding request body", "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	if !logic.IsBasicAuthEnabled() {
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(fmt.Errorf("basic auth is disabled"), "badrequest"),
+		)
+		return
+	}
+
+	err = logic.CreateSuperAdmin(&u)
+	if err != nil {
+		slog.Error("failed to create admin", "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	logger.Log(1, u.UserName, "was made a super admin")
+	json.NewEncoder(w).Encode(logic.ToReturnUser(u))
+}
+
+// @Summary     Transfer super admin role to another admin user
+// @Router      /api/users/adm/transfersuperadmin/{username} [post]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user to transfer super admin role"
+// @Success     200 {object} models.ReturnUser
+// @Failure     403 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func transferSuperAdmin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	caller, err := logic.GetUser(r.Header.Get("user"))
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+	}
+	if caller.PlatformRoleID != models.SuperAdminRole {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("only superadmin can assign the superadmin role to another user"), "forbidden"))
+		return
+	}
+	var params = mux.Vars(r)
+	username := params["username"]
+	u, err := logic.GetUser(username)
+	if err != nil {
+		slog.Error("error getting user", "user", u.UserName, "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	if u.PlatformRoleID != models.AdminRole {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("only admins can be promoted to superadmin role"), "forbidden"))
+		return
+	}
+	if !logic.IsBasicAuthEnabled() {
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(fmt.Errorf("basic auth is disabled"), "badrequest"),
+		)
+		return
+	}
+
+	u.IsSuperAdmin = true
+	u.PlatformRoleID = models.SuperAdminRole
+	err = logic.UpsertUser(*u)
+	if err != nil {
+		slog.Error("error updating user to superadmin: ", "user", u.UserName, "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+
+	caller.IsSuperAdmin = false
+	caller.PlatformRoleID = models.AdminRole
+	err = logic.UpsertUser(*caller)
+	if err != nil {
+		slog.Error("error demoting user to admin: ", "user", caller.UserName, "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	slog.Info("user was made a super admin", "user", u.UserName)
+	json.NewEncoder(w).Encode(logic.ToReturnUser(*u))
+}
+
+// @Summary     Create a user
+// @Router      /api/users/{username} [post]
+// @Tags        Users
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username of the user to create"
+// @Param       body body models.User true "User details"
+// @Success     200 {object} models.ReturnUser
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     403 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func createUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	caller, err := logic.GetUser(r.Header.Get("user"))
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	var user models.User
+	err = json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		logger.Log(0, user.UserName, "error decoding request body: ",
+			err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	if !servercfg.IsPro {
+		user.PlatformRoleID = models.AdminRole
+	}
+	if user.UserName == logic.MasterUser {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("username not allowed"), "badrequest"))
+		return
+	}
+
+	if user.PlatformRoleID == "" {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("platform role is missing"), "badrequest"))
+		return
+	}
+	userRole, err := logic.GetRole(user.PlatformRoleID)
+	if err != nil {
+		err = errors.New("error fetching role " + user.PlatformRoleID.String() + " " + err.Error())
+		slog.Error("error creating new user: ", "user", user.UserName, "error", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	if userRole.ID == models.SuperAdminRole {
+		err = errors.New("additional superadmins cannot be created")
+		slog.Error("error creating new user: ", "user", user.UserName, "error", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	}
+
+	if caller.PlatformRoleID != models.SuperAdminRole && user.PlatformRoleID == models.AdminRole {
+		err = errors.New("only superadmin can create admin users")
+		slog.Error("error creating new user: ", "user", user.UserName, "error", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	}
+
+	if !servercfg.IsPro && user.PlatformRoleID != models.AdminRole {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("non-admins users can only be created on Pro version"), "forbidden"))
+		return
+	}
+
+	err = logic.CreateUser(&user)
+	if err != nil {
+		slog.Error("error creating new user: ", "user", user.UserName, "error", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	logic.LogEvent(&models.Event{
+		Action: models.Create,
+		Source: models.Subject{
+			ID:   caller.UserName,
+			Name: caller.UserName,
+			Type: models.UserSub,
+		},
+		TriggeredBy: caller.UserName,
+		Target: models.Subject{
+			ID:   user.UserName,
+			Name: user.UserName,
+			Type: models.UserSub,
+			Info: user,
+		},
+		Origin: models.Dashboard,
+	})
+	logic.DeleteUserInvite(user.UserName)
+	logic.DeletePendingUser(user.UserName)
+	go mq.PublishPeerUpdate(false)
+	slog.Info("user was created", "username", user.UserName)
+	json.NewEncoder(w).Encode(logic.ToReturnUser(user))
+}
+
+// @Summary     Update a user
+// @Router      /api/users/{username} [put]
+// @Tags        Users
+// @Security    oauth
+// @Accept      json
+// @Produce     json
+// @Param       username path string true "Username of the user to update"
+// @Param       body body models.User true "User details"
+// @Success     200 {object} models.ReturnUser
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     403 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func updateUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	var params = mux.Vars(r)
+	// start here
+	var caller *models.User
+	var err error
+	var ismaster bool
+	if r.Header.Get("user") == logic.MasterUser {
+		ismaster = true
+	} else {
+		caller, err = logic.GetUser(r.Header.Get("user"))
+		if err != nil {
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		}
+	}
+
+	username := params["username"]
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, username,
+			"failed to update user info: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	var userchange models.User
+	// we decode our body request params
+	err = json.NewDecoder(r.Body).Decode(&userchange)
+	if err != nil {
+		slog.Error("failed to decode body", "error ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	if user.UserName != userchange.UserName {
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(
+				errors.New("user in param and request body not matching"),
+				"badrequest",
+			),
+		)
+		return
+	}
+	selfUpdate := false
+	if !ismaster && caller.UserName == user.UserName {
+		selfUpdate = true
+	}
+
+	if !ismaster && !selfUpdate {
+		if caller.PlatformRoleID == models.AdminRole && user.PlatformRoleID == models.SuperAdminRole {
+			slog.Error("non-superadmin user", "caller", caller.UserName, "attempted to update superadmin user", username)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("cannot update superadmin user"), "forbidden"))
+			return
+		}
+		if caller.PlatformRoleID != models.AdminRole && caller.PlatformRoleID != models.SuperAdminRole {
+			slog.Error("operation not allowed", "caller", caller.UserName, "attempted to update user", username)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("cannot update superadmin user"), "forbidden"))
+			return
+		}
+		if caller.PlatformRoleID == models.AdminRole && user.PlatformRoleID == models.AdminRole {
+			slog.Error("an admin user does not have permissions to update another admin user", "caller", caller.UserName, "attempted to update admin user", username)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("an admin user does not have permissions to update another admin user"), "forbidden"))
+			return
+		}
+		if caller.PlatformRoleID == models.AdminRole && userchange.PlatformRoleID == models.AdminRole {
+			err = errors.New("an admin user does not have permissions to assign the admin role to another user")
+			slog.Error(
+				"failed to update user",
+				"caller",
+				caller.UserName,
+				"attempted to update user",
+				username,
+				"error",
+				err,
+			)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+
+	}
+	if !ismaster && selfUpdate {
+		if user.PlatformRoleID != userchange.PlatformRoleID {
+			slog.Error("user cannot change his own role", "caller", caller.UserName, "attempted to update user role", username)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("user not allowed to self assign role"), "forbidden"))
+			return
+
+		}
+
+		if logic.IsMFAEnforced() && user.IsMFAEnabled && !userchange.IsMFAEnabled {
+			err = errors.New("mfa is enforced, user cannot unset their own mfa")
+			slog.Error("failed to update user", "caller", caller.UserName, "attempted to update user", username, "error", err)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+			return
+		}
+
+		if servercfg.IsPro {
+			// user cannot update his own roles and groups
+			if len(user.NetworkRoles) != len(userchange.NetworkRoles) || !reflect.DeepEqual(user.NetworkRoles, userchange.NetworkRoles) {
+				err = errors.New("user cannot update self update their network roles")
+				slog.Error("failed to update user", "caller", caller.UserName, "attempted to update user", username, "error", err)
+				logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+				return
+			}
+			// user cannot update his own roles and groups
+			if len(user.UserGroups) != len(userchange.UserGroups) || !reflect.DeepEqual(user.UserGroups, userchange.UserGroups) {
+				err = errors.New("user cannot update self update their groups")
+				slog.Error("failed to update user", "caller", caller.UserName, "attempted to update user", username, "error", err)
+				logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+				return
+			}
+		}
+	}
+	if ismaster {
+		if user.PlatformRoleID != models.SuperAdminRole && userchange.PlatformRoleID == models.SuperAdminRole {
+			slog.Error("operation not allowed", "caller", logic.MasterUser, "attempted to update user role to superadmin", username)
+			logic.ReturnErrorResponse(w, r, logic.FormatError(errors.New("attempted to update user role to superadmin"), "forbidden"))
+			return
+		}
+	}
+
+	if logic.IsOauthUser(user) == nil && userchange.Password != "" {
+		err := fmt.Errorf("cannot update user's password for an oauth user %s", username)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "forbidden"))
+		return
+	}
+	logic.AddGlobalNetRolesToAdmins(&userchange)
+	if userchange.PlatformRoleID != user.PlatformRoleID || !logic.CompareMaps(user.UserGroups, userchange.UserGroups) {
+		(&schema.UserAccessToken{UserName: user.UserName}).DeleteAllUserTokens(r.Context())
+	}
+	oldUser := *user
+	if ismaster {
+		caller = &models.User{
+			UserName: logic.MasterUser,
+		}
+	}
+	action := models.Update
+	// TODO: here we are relying on the dashboard to only
+	// make singular updates, but it's possible that the
+	// API can be called to make multiple changes to the
+	// user. We should update it to log multiple events
+	// or create singular update APIs.
+	if userchange.IsMFAEnabled != user.IsMFAEnabled {
+		if userchange.IsMFAEnabled {
+			// the update API won't be used to enable MFA.
+			action = models.EnableMFA
+		} else {
+			action = models.DisableMFA
+		}
+	}
+	e := models.Event{
+		Action: action,
+		Source: models.Subject{
+			ID:   caller.UserName,
+			Name: caller.UserName,
+			Type: models.UserSub,
+		},
+		TriggeredBy: caller.UserName,
+		Target: models.Subject{
+			ID:   user.UserName,
+			Name: user.UserName,
+			Type: models.UserSub,
+		},
+		Diff: models.Diff{
+			Old: oldUser,
+			New: userchange,
+		},
+		Origin: models.Dashboard,
+	}
+	user, err = logic.UpdateUser(&userchange, user)
+	if err != nil {
+		logger.Log(0, username,
+			"failed to update user info: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+	logic.LogEvent(&e)
+	go mq.PublishPeerUpdate(false)
+	go func() {
+		// Populating all the networks the user has access to by
+		// being a member of groups.
+		userMembershipNetworkAccess := make(map[models.NetworkID]struct{})
+		for groupID := range user.UserGroups {
+			userGroup, _ := logic.GetUserGroup(groupID)
+			for netID := range userGroup.NetworkRoles {
+				userMembershipNetworkAccess[netID] = struct{}{}
+			}
+		}
+
+		extclients, err := logic.GetAllExtClients()
+		if err != nil {
+			slog.Error("failed to fetch extclients", "error", err)
+			return
+		}
+
+		for _, extclient := range extclients {
+			if extclient.OwnerID != user.UserName {
+				continue
+			}
+
+			var shouldDelete bool
+			if user.PlatformRoleID == models.SuperAdminRole || user.PlatformRoleID == models.AdminRole {
+				// Super-admin and Admin's access is not determined by group membership
+				// or network roles. Even if a user is removed from the group, they
+				// continue to have access to the network.
+				// So, no need to delete the extclient.
+				shouldDelete = false
+			} else {
+				_, hasAccess := user.NetworkRoles[models.NetworkID(extclient.Network)]
+				if hasAccess {
+					// The user has access to the network by themselves and not by
+					// virtue of being a member of the group.
+					// So, no need to delete the extclient.
+					shouldDelete = false
+				} else {
+					_, hasAccessThroughGroups := userMembershipNetworkAccess[models.NetworkID(extclient.Network)]
+					if !hasAccessThroughGroups {
+						// The user does not have access to the network by either
+						// being a Super-admin or Admin, by network roles or by virtue
+						// of being a member a group that has access to the network.
+						// So, delete the extclient.
+						shouldDelete = true
+					}
+				}
+			}
+
+			if shouldDelete {
+				err = logic.DeleteExtClientAndCleanup(extclient)
+				if err != nil {
+					slog.Error("failed to delete extclient",
+						"id", extclient.ClientID, "owner", user.UserName, "error", err)
+				} else {
+					if err := mq.PublishDeletedClientPeerUpdate(&extclient); err != nil {
+						slog.Error("error setting ext peers: " + err.Error())
+					}
+				}
+			}
+		}
+	}()
+	logger.Log(1, username, "was updated")
+	json.NewEncoder(w).Encode(logic.ToReturnUser(*user))
+}
+
+// @Summary     Delete a user
+// @Router      /api/users/{username} [delete]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username path string true "Username of the user to delete"
+// @Param       force_delete_configs query string false "Force delete configs"
+// @Success     200 {string} string
+// @Failure     400 {object} models.ErrorResponse
+// @Failure     500 {object} models.ErrorResponse
+func deleteUser(w http.ResponseWriter, r *http.Request) {
+	// Set header
+	w.Header().Set("Content-Type", "application/json")
+
+	// get params
+	var params = mux.Vars(r)
+	caller, err := logic.GetUser(r.Header.Get("user"))
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+	}
+	callerUserRole, err := logic.GetRole(caller.PlatformRoleID)
+	if err != nil {
+		slog.Error("failed to get role ", "role", callerUserRole.ID, "error", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	username := params["username"]
+	user, err := logic.GetUser(username)
+	if err != nil {
+		logger.Log(0, username,
+			"failed to update user info: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	userRole, err := logic.GetRole(user.PlatformRoleID)
+	if err != nil {
+		slog.Error("failed to get role ", "role", userRole.ID, "error", err)
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	if userRole.ID == models.SuperAdminRole {
+		slog.Error(
+			"failed to delete user: ", "user", username, "error", "superadmin cannot be deleted")
+		logic.ReturnErrorResponse(
+			w,
+			r,
+			logic.FormatError(fmt.Errorf("superadmin cannot be deleted"), "internal"),
+		)
+		return
+	}
+	if callerUserRole.ID != models.SuperAdminRole {
+		if callerUserRole.ID == models.AdminRole && userRole.ID == models.AdminRole {
+			slog.Error(
+				"failed to delete user: ",
+				"user",
+				username,
+				"error",
+				"admin cannot delete another admin user, including oneself",
+			)
+			logic.ReturnErrorResponse(
+				w,
+				r,
+				logic.FormatError(
+					fmt.Errorf("admin cannot delete another admin user, including oneself"),
+					"internal",
+				),
+			)
+			return
+		}
+	}
+
+	if user.AuthType == models.OAuth || user.ExternalIdentityProviderID != "" {
+		err = fmt.Errorf("cannot delete idp user %s", username)
+		logger.Log(0, username, "failed to delete user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "badrequest"))
+		return
+	}
+
+	err = logic.DeleteUser(username)
+	if err != nil {
+		logger.Log(0, username,
+			"failed to delete user: ", err.Error())
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, "internal"))
+		return
+	}
+	logic.LogEvent(&models.Event{
+		Action: models.Delete,
+		Source: models.Subject{
+			ID:   caller.UserName,
+			Name: caller.UserName,
+			Type: models.UserSub,
+		},
+		TriggeredBy: caller.UserName,
+		Target: models.Subject{
+			ID:   user.UserName,
+			Name: user.UserName,
+			Type: models.UserSub,
+		},
+		Origin: models.Dashboard,
+		Diff: models.Diff{
+			Old: user,
+			New: nil,
+		},
+	})
+	// check and delete extclient with this ownerID
+	go func() {
+		delete := r.URL.Query().Get("force_delete_configs") == "true"
+		extclients, err := logic.GetAllExtClients()
+		if err != nil {
+			slog.Error("failed to get extclients", "error", err)
+			return
+		}
+		for _, extclient := range extclients {
+			if extclient.OwnerID == user.UserName {
+				if extclient.DeviceID == "" && extclient.RemoteAccessClientID == "" {
+					if !delete {
+						// only delete wireguard configs on force
+						continue
+					}
+				}
+				err = logic.DeleteExtClientAndCleanup(extclient)
+				if err != nil {
+					slog.Error("failed to delete extclient",
+						"id", extclient.ClientID, "owner", username, "error", err)
+				} else {
+					if err := mq.PublishDeletedClientPeerUpdate(&extclient); err != nil {
+						slog.Error("error setting ext peers: " + err.Error())
+					}
+				}
+			}
+		}
+		_ = logic.DeleteUserInvite(user.UserName)
+		mq.PublishPeerUpdate(false)
+		if servercfg.IsDNSMode() {
+			logic.SetDNS()
+		}
+	}()
+	logger.Log(1, username, "was deleted")
+	json.NewEncoder(w).Encode(params["username"] + " deleted.")
+}
+
+// Called when vpn client dials in to start the auth flow and first stage is to get register URL itself
+func socketHandler(w http.ResponseWriter, r *http.Request) {
+	// Upgrade our raw HTTP connection to a websocket based one
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		logger.Log(0, "error during connection upgrade for node sign-in:", err.Error())
+		return
+	}
+	if conn == nil {
+		logger.Log(0, "failed to establish web-socket connection during node sign-in")
+		return
+	}
+	// Start handling the session
+	go auth.SessionHandler(conn)
+}
+
+func listRoles(w http.ResponseWriter, r *http.Request) {
+	var roles []models.UserRolePermissionTemplate
+	var err error
+	roles, err = logic.ListPlatformRoles()
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, models.ErrorResponse{
+			Code:    http.StatusInternalServerError,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	logic.ReturnSuccessResponseWithJson(w, r, roles, "successfully fetched user roles permission templates")
+}
+
+// @Summary     Log out a user
+// @Router      /api/v1/users/logout [post]
+// @Tags        Users
+// @Security    oauth
+// @Produce     json
+// @Param       username query string true "Username"
+// @Success     200 {object} models.SuccessResponse
+// @Failure     400 {object} models.ErrorResponse
+func logout(w http.ResponseWriter, r *http.Request) {
+	// set header.
+	w.Header().Set("Content-Type", "application/json")
+	userName := r.URL.Query().Get("username")
+	user, err := logic.GetUser(userName)
+	if err != nil {
+		logic.ReturnErrorResponse(w, r, logic.FormatError(err, logic.BadReq))
+		return
+	}
+	var target models.SubjectType
+	if val := r.Header.Get("From-Ui"); val == "true" {
+		target = models.DashboardSub
+	} else {
+		target = models.ClientAppSub
+	}
+	if target != "" {
+		logic.LogEvent(&models.Event{
+			Action: models.LogOut,
+			Source: models.Subject{
+				ID:   user.UserName,
+				Name: user.UserName,
+				Type: models.UserSub,
+			},
+			TriggeredBy: user.UserName,
+			Target: models.Subject{
+				ID:   target.String(),
+				Name: target.String(),
+				Type: target,
+			},
+			Origin: models.Origin(target),
+		})
+	}
+
+	logic.ReturnSuccessResponse(w, r, "user logged out")
+}

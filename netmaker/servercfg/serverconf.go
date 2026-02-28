@@ -1,0 +1,804 @@
+package servercfg
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gravitl/netmaker/config"
+)
+
+// EmqxBrokerType denotes the broker type for EMQX MQTT
+const EmqxBrokerType = "emqx"
+
+// Emqxdeploy - emqx deploy type
+type Emqxdeploy string
+
+var (
+	Version              = "dev"
+	IsPro                = false
+	ErrLicenseValidation error
+	EmqxCloudDeploy      Emqxdeploy = "cloud"
+	EmqxOnPremDeploy     Emqxdeploy = "on-prem"
+)
+
+// SetHost - sets the host ip
+func SetHost() error {
+	remoteip, err := GetPublicIP()
+	if err != nil {
+		return err
+	}
+	os.Setenv("SERVER_HOST", remoteip)
+	return nil
+}
+
+// GetJwtValidityDurationFromEnv - returns the JWT validity duration in seconds
+func GetJwtValidityDurationFromEnv() int {
+	var defaultDuration = 43200
+	if os.Getenv("JWT_VALIDITY_DURATION") != "" {
+		t, err := strconv.Atoi(os.Getenv("JWT_VALIDITY_DURATION"))
+		if err == nil {
+			return t
+		}
+	}
+	return defaultDuration
+}
+
+// GetRacRestrictToSingleNetwork - returns whether the feature to allow simultaneous network connections via RAC is enabled
+func GetRacRestrictToSingleNetwork() bool {
+	return os.Getenv("RAC_RESTRICT_TO_SINGLE_NETWORK") == "true"
+}
+
+// GetFrontendURL - gets the frontend url
+func GetFrontendURL() string {
+	var frontend = ""
+	if os.Getenv("FRONTEND_URL") != "" {
+		frontend = os.Getenv("FRONTEND_URL")
+	} else if config.Config.Server.FrontendURL != "" {
+		frontend = config.Config.Server.FrontendURL
+	}
+	if frontend == "" {
+		return fmt.Sprintf("https://dashboard.%s", GetNmBaseDomain())
+	}
+	return frontend
+}
+
+// GetAPIConnString - gets the api connections string
+func GetAPIConnString() string {
+	conn := ""
+	if os.Getenv("SERVER_API_CONN_STRING") != "" {
+		conn = os.Getenv("SERVER_API_CONN_STRING")
+	} else if config.Config.Server.APIConnString != "" {
+		conn = config.Config.Server.APIConnString
+	}
+	return conn
+}
+
+// SetVersion - set version of netmaker
+func SetVersion(v string) {
+	Version = v
+}
+
+// GetVersion - version of netmaker
+func GetVersion() string {
+	return Version
+}
+
+// GetServerHostIP - fetches server IP
+func GetServerHostIP() string {
+	return os.Getenv("SERVER_HOST")
+}
+
+// GetDB - gets the database type
+func GetDB() string {
+	database := "sqlite"
+	if os.Getenv("DATABASE") != "" {
+		database = os.Getenv("DATABASE")
+	} else if config.Config.Server.Database != "" {
+		database = config.Config.Server.Database
+	}
+	return database
+}
+
+// CacheEnabled - checks if cache is enabled
+func CacheEnabled() bool {
+	caching := true
+	if os.Getenv("CACHING_ENABLED") == "false" {
+		caching = false
+	} else if config.Config.Server.CacheEnabled == "false" {
+		caching = false
+	}
+	return caching
+}
+
+// GetAPIHost - gets the api host
+func GetAPIHost() string {
+	serverhost := "127.0.0.1"
+	remoteip, _ := GetPublicIP()
+	if os.Getenv("SERVER_HTTP_HOST") != "" {
+		serverhost = os.Getenv("SERVER_HTTP_HOST")
+	} else if config.Config.Server.APIHost != "" {
+		serverhost = config.Config.Server.APIHost
+	} else if os.Getenv("SERVER_HOST") != "" {
+		serverhost = os.Getenv("SERVER_HOST")
+	} else {
+		if remoteip != "" {
+			serverhost = remoteip
+		}
+	}
+	return serverhost
+}
+
+// GetAPIPort - gets the api port
+func GetAPIPort() string {
+	apiport := "8081"
+	if os.Getenv("API_PORT") != "" {
+		apiport = os.Getenv("API_PORT")
+	} else if config.Config.Server.APIPort != "" {
+		apiport = config.Config.Server.APIPort
+	}
+	return apiport
+}
+
+// GetCoreDNSAddr - gets the core dns address
+func GetCoreDNSAddr() string {
+	addr, _ := GetPublicIP()
+	if os.Getenv("COREDNS_ADDR") != "" {
+		addr = os.Getenv("COREDNS_ADDR")
+	} else if config.Config.Server.CoreDNSAddr != "" {
+		addr = config.Config.Server.CoreDNSAddr
+	}
+	return addr
+}
+
+// GetPublicBrokerEndpoint - returns the public broker endpoint which shall be used by netclient
+func GetPublicBrokerEndpoint() string {
+	if os.Getenv("BROKER_ENDPOINT") != "" {
+		return os.Getenv("BROKER_ENDPOINT")
+	} else {
+		return config.Config.Server.Broker
+	}
+}
+
+func GetSmtpHost() string {
+	v := ""
+	if fromEnv := os.Getenv("SMTP_HOST"); fromEnv != "" {
+		v = fromEnv
+	} else if fromCfg := config.Config.Server.SmtpHost; fromCfg != "" {
+		v = fromCfg
+	}
+	return v
+}
+
+func GetSmtpPort() int {
+	v := 587
+	if fromEnv := os.Getenv("SMTP_PORT"); fromEnv != "" {
+		port, err := strconv.Atoi(fromEnv)
+		if err == nil {
+			v = port
+		}
+	} else if fromCfg := config.Config.Server.SmtpPort; fromCfg != 0 {
+		v = fromCfg
+	}
+	return v
+}
+
+func GetSenderEmail() string {
+	v := ""
+	if fromEnv := os.Getenv("EMAIL_SENDER_ADDR"); fromEnv != "" {
+		v = fromEnv
+	} else if fromCfg := config.Config.Server.EmailSenderAddr; fromCfg != "" {
+		v = fromCfg
+	}
+	return v
+}
+
+func GetSenderUser() string {
+	v := ""
+	if fromEnv := os.Getenv("EMAIL_SENDER_USER"); fromEnv != "" {
+		v = fromEnv
+	} else if fromCfg := config.Config.Server.EmailSenderUser; fromCfg != "" {
+		v = fromCfg
+	}
+	return v
+}
+
+func GetEmaiSenderPassword() string {
+	v := ""
+	if fromEnv := os.Getenv("EMAIL_SENDER_PASSWORD"); fromEnv != "" {
+		v = fromEnv
+	} else if fromCfg := config.Config.Server.EmailSenderPassword; fromCfg != "" {
+		v = fromCfg
+	}
+	return v
+}
+
+// GetOwnerEmail - gets the owner email (saas)
+func GetOwnerEmail() string {
+	return os.Getenv("SAAS_OWNER_EMAIL")
+}
+
+// GetMessageQueueEndpoint - gets the message queue endpoint
+func GetMessageQueueEndpoint() (string, bool) {
+	host, _ := GetPublicIP()
+	if os.Getenv("SERVER_BROKER_ENDPOINT") != "" {
+		host = os.Getenv("SERVER_BROKER_ENDPOINT")
+	} else if config.Config.Server.ServerBrokerEndpoint != "" {
+		host = config.Config.Server.ServerBrokerEndpoint
+	} else if os.Getenv("BROKER_ENDPOINT") != "" {
+		host = os.Getenv("BROKER_ENDPOINT")
+	} else if config.Config.Server.Broker != "" {
+		host = config.Config.Server.Broker
+	} else {
+		host += ":1883" // default
+	}
+	return host, strings.Contains(host, "wss") || strings.Contains(host, "ssl") || strings.Contains(host, "mqtts")
+}
+
+// GetBrokerType - returns the type of MQ broker
+func GetBrokerType() string {
+	if os.Getenv("BROKER_TYPE") != "" {
+		return os.Getenv("BROKER_TYPE")
+	} else {
+		return "mosquitto"
+	}
+}
+
+// GetMasterKey - gets the configured master key of server
+func GetMasterKey() string {
+	key := ""
+	if os.Getenv("MASTER_KEY") != "" {
+		key = os.Getenv("MASTER_KEY")
+	} else if config.Config.Server.MasterKey != "" {
+		key = config.Config.Server.MasterKey
+	}
+	return key
+}
+
+// GetAllowedOrigin - get the allowed origin
+func GetAllowedOrigin() string {
+	allowedorigin := "*"
+	if os.Getenv("CORS_ALLOWED_ORIGIN") != "" {
+		allowedorigin = os.Getenv("CORS_ALLOWED_ORIGIN")
+	} else if config.Config.Server.AllowedOrigin != "" {
+		allowedorigin = config.Config.Server.AllowedOrigin
+	}
+	return allowedorigin
+}
+
+// IsRestBackend - checks if rest is on or off
+func IsRestBackend() bool {
+	isrest := true
+	if os.Getenv("REST_BACKEND") != "" {
+		if os.Getenv("REST_BACKEND") == "off" {
+			isrest = false
+		}
+	} else if config.Config.Server.RestBackend != "" {
+		if config.Config.Server.RestBackend == "off" {
+			isrest = false
+		}
+	}
+	return isrest
+}
+
+// IsMetricsExporter - checks if metrics exporter is on or off
+func IsMetricsExporter() bool {
+	export := false
+	if os.Getenv("METRICS_EXPORTER") != "" {
+		if os.Getenv("METRICS_EXPORTER") == "on" {
+			export = true
+		}
+	} else if config.Config.Server.MetricsExporter != "" {
+		if config.Config.Server.MetricsExporter == "on" {
+			export = true
+		}
+	}
+	return export
+}
+
+// IsMessageQueueBackend - checks if message queue is on or off
+func IsMessageQueueBackend() bool {
+	ismessagequeue := true
+	if os.Getenv("MESSAGEQUEUE_BACKEND") != "" {
+		if os.Getenv("MESSAGEQUEUE_BACKEND") == "off" {
+			ismessagequeue = false
+		}
+	} else if config.Config.Server.MessageQueueBackend != "" {
+		if config.Config.Server.MessageQueueBackend == "off" {
+			ismessagequeue = false
+		}
+	}
+	return ismessagequeue
+}
+
+// Telemetry - checks if telemetry data should be sent
+func Telemetry() string {
+	telemetry := "on"
+	if os.Getenv("TELEMETRY") == "off" {
+		telemetry = "off"
+	}
+	if config.Config.Server.Telemetry == "off" {
+		telemetry = "off"
+	}
+	return telemetry
+}
+
+// GetServer - gets the server name
+func GetServer() string {
+	server := ""
+	if os.Getenv("SERVER_NAME") != "" {
+		server = os.Getenv("SERVER_NAME")
+	} else if config.Config.Server.Server != "" {
+		server = config.Config.Server.Server
+	}
+	return server
+}
+
+func GetVerbosity() int32 {
+	var verbosity = 0
+	var err error
+	if os.Getenv("VERBOSITY") != "" {
+		verbosity, err = strconv.Atoi(os.Getenv("VERBOSITY"))
+		if err != nil {
+			verbosity = 0
+		}
+	} else if config.Config.Server.Verbosity != 0 {
+		verbosity = int(config.Config.Server.Verbosity)
+	}
+	if verbosity < 0 || verbosity > 4 {
+		verbosity = 0
+	}
+	return int32(verbosity)
+}
+
+// AutoUpdateEnabled returns a boolean indicating whether netclient auto update is enabled or disabled
+// default is enabled
+func AutoUpdateEnabled() bool {
+	if os.Getenv("NETCLIENT_AUTO_UPDATE") == "disabled" {
+		return false
+	} else if config.Config.Server.NetclientAutoUpdate == "disabled" {
+		return false
+	}
+	return true
+}
+
+// IsDNSMode - should it run with DNS
+func IsDNSMode() bool {
+	isdns := true
+	if os.Getenv("DNS_MODE") != "" {
+		if os.Getenv("DNS_MODE") == "off" {
+			isdns = false
+		}
+	} else if config.Config.Server.DNSMode != "" {
+		if config.Config.Server.DNSMode == "off" {
+			isdns = false
+		}
+	}
+	return isdns
+}
+
+// IsDisplayKeys - should server be able to display keys?
+func IsDisplayKeys() bool {
+	isdisplay := true
+	if os.Getenv("DISPLAY_KEYS") != "" {
+		if os.Getenv("DISPLAY_KEYS") == "off" {
+			isdisplay = false
+		}
+	} else if config.Config.Server.DisplayKeys != "" {
+		if config.Config.Server.DisplayKeys == "off" {
+			isdisplay = false
+		}
+	}
+	return isdisplay
+}
+
+// DisableRemoteIPCheck - disable the remote ip check
+func DisableRemoteIPCheck() bool {
+	disabled := false
+	if os.Getenv("DISABLE_REMOTE_IP_CHECK") != "" {
+		if os.Getenv("DISABLE_REMOTE_IP_CHECK") == "on" {
+			disabled = true
+		}
+	} else if config.Config.Server.DisableRemoteIPCheck != "" {
+		if config.Config.Server.DisableRemoteIPCheck == "on" {
+			disabled = true
+		}
+	}
+	return disabled
+}
+
+// GetPublicIP - gets public ip
+func GetPublicIP() (string, error) {
+
+	endpoint := ""
+	var err error
+
+	iplist := []string{"https://ifconfig.me/ip", "https://api.ipify.org", "https://ipinfo.io/ip"}
+	publicIpService := os.Getenv("PUBLIC_IP_SERVICE")
+	if publicIpService != "" {
+		// prepend the user-specified service so it's checked first
+		iplist = append([]string{publicIpService}, iplist...)
+	} else if config.Config.Server.PublicIPService != "" {
+		publicIpService = config.Config.Server.PublicIPService
+
+		// prepend the user-specified service so it's checked first
+		iplist = append([]string{publicIpService}, iplist...)
+	}
+
+	for _, ipserver := range iplist {
+		client := &http.Client{
+			Timeout: time.Second * 10,
+		}
+		resp, err := client.Get(ipserver)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				continue
+			}
+			endpoint = string(bodyBytes)
+			break
+		}
+	}
+	if endpoint == "" {
+		err = errors.New("public address not found")
+	}
+	return endpoint, err
+}
+
+// GetPlatform - get the system type of server
+func GetPlatform() string {
+	platform := "linux"
+	if os.Getenv("PLATFORM") != "" {
+		platform = os.Getenv("PLATFORM")
+	} else if config.Config.Server.Platform != "" {
+		platform = config.Config.Server.Platform
+	}
+	return platform
+}
+
+// GetSQLConn - get the sql connection string
+func GetSQLConn() string {
+	sqlconn := "http://"
+	if os.Getenv("SQL_CONN") != "" {
+		sqlconn = os.Getenv("SQL_CONN")
+	} else if config.Config.Server.SQLConn != "" {
+		sqlconn = config.Config.Server.SQLConn
+	}
+	return sqlconn
+}
+
+// GetNodeID - gets the node id
+func GetNodeID() string {
+	var id string
+	var err error
+	// id = getMacAddr()
+	if os.Getenv("NODE_ID") != "" {
+		id = os.Getenv("NODE_ID")
+	} else if config.Config.Server.NodeID != "" {
+		id = config.Config.Server.NodeID
+	} else {
+		id, err = os.Hostname()
+		if err != nil {
+			return ""
+		}
+	}
+	return id
+}
+
+func SetNodeID(id string) {
+	config.Config.Server.NodeID = id
+}
+
+// GetAuthProviderInfo = gets the oauth provider info
+func GetAuthProviderInfo() (pi []string) {
+	var authProvider = ""
+
+	defer func() {
+		if authProvider == "oidc" {
+			if os.Getenv("OIDC_ISSUER") != "" {
+				pi = append(pi, os.Getenv("OIDC_ISSUER"))
+			} else if config.Config.Server.OIDCIssuer != "" {
+				pi = append(pi, config.Config.Server.OIDCIssuer)
+			} else {
+				pi = []string{"", "", ""}
+			}
+		}
+	}()
+
+	if os.Getenv("AUTH_PROVIDER") != "" && os.Getenv("CLIENT_ID") != "" && os.Getenv("CLIENT_SECRET") != "" {
+		authProvider = strings.ToLower(os.Getenv("AUTH_PROVIDER"))
+		if authProvider == "google" || authProvider == "azure-ad" || authProvider == "github" || authProvider == "oidc" {
+			return []string{authProvider, os.Getenv("CLIENT_ID"), os.Getenv("CLIENT_SECRET")}
+		} else {
+			authProvider = ""
+		}
+	} else if config.Config.Server.AuthProvider != "" && config.Config.Server.ClientID != "" && config.Config.Server.ClientSecret != "" {
+		authProvider = strings.ToLower(config.Config.Server.AuthProvider)
+		if authProvider == "google" || authProvider == "azure-ad" || authProvider == "github" || authProvider == "oidc" {
+			return []string{authProvider, config.Config.Server.ClientID, config.Config.Server.ClientSecret}
+		}
+	}
+	return []string{"", "", ""}
+}
+
+// GetAzureTenant - retrieve the azure tenant ID from env variable or config file
+func GetAzureTenant() string {
+	var azureTenant = ""
+	if os.Getenv("AZURE_TENANT") != "" {
+		azureTenant = os.Getenv("AZURE_TENANT")
+	} else if config.Config.Server.AzureTenant != "" {
+		azureTenant = config.Config.Server.AzureTenant
+	}
+	return azureTenant
+}
+
+// GetMqPassword - fetches the MQ password
+func GetMqPassword() string {
+	password := ""
+	if os.Getenv("MQ_PASSWORD") != "" {
+		password = os.Getenv("MQ_PASSWORD")
+	} else if config.Config.Server.MQPassword != "" {
+		password = config.Config.Server.MQPassword
+	}
+	return password
+}
+
+// GetMqUserName - fetches the MQ username
+func GetMqUserName() string {
+	password := ""
+	if os.Getenv("MQ_USERNAME") != "" {
+		password = os.Getenv("MQ_USERNAME")
+	} else if config.Config.Server.MQUserName != "" {
+		password = config.Config.Server.MQUserName
+	}
+	return password
+}
+
+// GetMetricsPort - get metrics port
+func GetMetricsPort() int {
+	p := 51821
+	if os.Getenv("METRICS_PORT") != "" {
+		pStr := os.Getenv("METRICS_PORT")
+		pInt, err := strconv.Atoi(pStr)
+		if err == nil && pInt != 0 {
+			p = pInt
+		}
+	}
+	return p
+}
+
+// GetMetricInterval - get the publish metric interval
+func GetMetricIntervalInMinutes() time.Duration {
+	//default 15 minutes
+	mi := "15"
+	if os.Getenv("PUBLISH_METRIC_INTERVAL") != "" {
+		mi = os.Getenv("PUBLISH_METRIC_INTERVAL")
+	}
+	interval, err := strconv.Atoi(mi)
+	if err != nil {
+		interval = 15
+	}
+
+	return time.Duration(interval) * time.Minute
+}
+
+// GetMetricInterval - get the publish metric interval
+func GetMetricInterval() string {
+	//default 15 minutes
+	mi := "15"
+	if os.Getenv("PUBLISH_METRIC_INTERVAL") != "" {
+		mi = os.Getenv("PUBLISH_METRIC_INTERVAL")
+	}
+	return mi
+}
+
+// GetManageDNS - if manage DNS enabled or not
+func GetManageDNS() bool {
+	enabled := true
+	if os.Getenv("MANAGE_DNS") != "" {
+		enabled = os.Getenv("MANAGE_DNS") == "true"
+	}
+	return enabled
+}
+
+func IsOldAclEnabled() bool {
+	enabled := true
+	if os.Getenv("OLD_ACL_SUPPORT") != "" {
+		enabled = os.Getenv("OLD_ACL_SUPPORT") == "true"
+	}
+	return enabled
+}
+
+// GetDefaultDomain - get the default domain
+func GetDefaultDomain() string {
+	//default hosted.nm
+	domain := "nm.internal"
+	if os.Getenv("DEFAULT_DOMAIN") != "" {
+		if validateDomain(os.Getenv("DEFAULT_DOMAIN")) {
+			domain = os.Getenv("DEFAULT_DOMAIN")
+		}
+	}
+	return domain
+}
+
+func validateDomain(domain string) bool {
+	domainPattern := `[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}(\.[a-zA-Z0-9][a-zA-Z0-9_-]{0,62})*(\.[a-zA-Z][a-zA-Z0-9]{0,10}){1}`
+
+	exp := regexp.MustCompile("^" + domainPattern + "$")
+
+	return exp.MatchString(domain)
+}
+
+// GetEmqxRestEndpoint - returns the REST API Endpoint of EMQX
+func GetEmqxRestEndpoint() string {
+	return os.Getenv("EMQX_REST_ENDPOINT")
+}
+
+// IsBasicAuthEnabled - checks if basic auth has been configured to be turned off
+func IsBasicAuthEnabled() bool {
+	if DeployedByOperator() {
+		return true
+	}
+
+	var enabled = true //default
+	if os.Getenv("BASIC_AUTH") != "" {
+		enabled = os.Getenv("BASIC_AUTH") == "yes"
+	} else if config.Config.Server.BasicAuth != "" {
+		enabled = config.Config.Server.BasicAuth == "yes"
+	}
+	return enabled
+}
+
+// GetLicenseKey - retrieves pro license value from env or conf files
+func GetLicenseKey() string {
+	licenseKeyValue := os.Getenv("LICENSE_KEY")
+	if licenseKeyValue == "" {
+		licenseKeyValue = config.Config.Server.LicenseValue
+	}
+	return licenseKeyValue
+}
+
+// GetNetmakerTenantID - get's the associated, Netmaker, tenant ID to verify ownership
+func GetNetmakerTenantID() string {
+	netmakerTenantID := os.Getenv("NETMAKER_TENANT_ID")
+	if netmakerTenantID == "" {
+		netmakerTenantID = config.Config.Server.NetmakerTenantID
+	}
+	return netmakerTenantID
+}
+
+// GetUserLimit - fetches free tier limits on users
+func GetUserLimit() int {
+	var userslimit int
+	if os.Getenv("USERS_LIMIT") != "" {
+		userslimit, _ = strconv.Atoi(os.Getenv("USERS_LIMIT"))
+	} else {
+		userslimit = config.Config.Server.UsersLimit
+	}
+	return userslimit
+}
+
+// GetNetworkLimit - fetches free tier limits on networks
+func GetNetworkLimit() int {
+	var networkslimit int
+	if os.Getenv("NETWORKS_LIMIT") != "" {
+		networkslimit, _ = strconv.Atoi(os.Getenv("NETWORKS_LIMIT"))
+	} else {
+		networkslimit = config.Config.Server.NetworksLimit
+	}
+	return networkslimit
+}
+
+// GetMachinesLimit - fetches free tier limits on machines (clients + hosts)
+func GetMachinesLimit() int {
+	if l, err := strconv.Atoi(os.Getenv("MACHINES_LIMIT")); err == nil {
+		return l
+	}
+	return config.Config.Server.MachinesLimit
+}
+
+// GetIngressLimit - fetches free tier limits on ingresses
+func GetIngressLimit() int {
+	if l, err := strconv.Atoi(os.Getenv("INGRESSES_LIMIT")); err == nil {
+		return l
+	}
+	return config.Config.Server.IngressesLimit
+}
+
+// GetEgressLimit - fetches free tier limits on egresses
+func GetEgressLimit() int {
+	if l, err := strconv.Atoi(os.Getenv("EGRESSES_LIMIT")); err == nil {
+		return l
+	}
+	return config.Config.Server.EgressesLimit
+}
+
+// DeployedByOperator - returns true if the instance is deployed by netmaker operator
+func DeployedByOperator() bool {
+	if os.Getenv("DEPLOYED_BY_OPERATOR") != "" {
+		return os.Getenv("DEPLOYED_BY_OPERATOR") == "true"
+	}
+	return config.Config.Server.DeployedByOperator
+}
+
+// IsEndpointDetectionEnabled - returns true if endpoint detection enabled
+func IsEndpointDetectionEnabled() bool {
+	var enabled = true //default
+	if os.Getenv("ENDPOINT_DETECTION") != "" {
+		enabled = os.Getenv("ENDPOINT_DETECTION") == "true"
+	}
+	return enabled
+}
+
+// IsStunEnabled - returns true if STUN set to on
+func IsStunEnabled() bool {
+	var enabled = true
+	if os.Getenv("STUN") != "" {
+		enabled = os.Getenv("STUN") == "true"
+	}
+	return enabled
+}
+
+func GetStunServers() string {
+	stunservers := os.Getenv("STUN_SERVERS")
+	if stunservers == "" {
+		stunservers = "stun1.l.google.com:19302,stun2.l.google.com:19302,stun3.l.google.com:19302,stun4.l.google.com:19302"
+	}
+	return stunservers
+}
+
+// GetEnvironment returns the environment the server is running in (e.g. dev, staging, prod...)
+func GetEnvironment() string {
+	if env := os.Getenv("ENVIRONMENT"); env != "" {
+		return env
+	}
+	if env := config.Config.Server.Environment; env != "" {
+		return env
+	}
+	return ""
+}
+
+// GetEmqxDeployType - fetches emqx deploy type this server uses
+func GetEmqxDeployType() (deployType Emqxdeploy) {
+	deployType = EmqxOnPremDeploy
+	if os.Getenv("EMQX_DEPLOY_TYPE") == string(EmqxCloudDeploy) {
+		deployType = EmqxCloudDeploy
+	}
+	return
+}
+
+// GetEmqxAppID - gets the emqx cloud app id
+func GetEmqxAppID() string {
+	return os.Getenv("EMQX_APP_ID")
+}
+
+// GetEmqxAppSecret - gets the emqx cloud app secret
+func GetEmqxAppSecret() string {
+	return os.Getenv("EMQX_APP_SECRET")
+}
+
+// GetAllowedEmailDomains - gets the allowed email domains for oauth signup
+func GetAllowedEmailDomains() string {
+	allowedDomains := "*"
+	if os.Getenv("ALLOWED_EMAIL_DOMAINS") != "" {
+		allowedDomains = os.Getenv("ALLOWED_EMAIL_DOMAINS")
+	} else if config.Config.Server.AllowedEmailDomains != "" {
+		allowedDomains = config.Config.Server.AllowedEmailDomains
+	}
+	return allowedDomains
+}
+
+// GetNmBaseDomain - fetches nm base domain
+func GetNmBaseDomain() string {
+	return os.Getenv("NM_DOMAIN")
+}

@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netclient
+  labels:
+    app: netclient
+spec:
+  selector:
+    matchLabels:
+      app: netclient
+  template:
+    metadata:
+      labels:
+        app: netclient
+    spec:
+      hostNetwork: true
+      containers:
+      - name: netclient
+        image: gravitl/netclient:v1.5.0
+        env:
+        - name: TOKEN
+          value: "TOKEN_VALUE"
+        volumeMounts:
+        - mountPath: /etc/netclient
+          name: etc-netclient
+        - mountPath: /var/log
+          name: log-netclient
+        securityContext:
+          privileged: true
+      volumes:
+      - hostPath:
+          # change path for every netclient deployed, e.g. /etc/netclient-1, /etc/netclient-2, etc.
+          # alternatively "netclient join" can be run from inside the container for new networks
+          path: /etc/netclient
+          type: DirectoryOrCreate
+        name: etc-netclient
+      - emptyDir:
+          medium: Memory
+        name: log-netclient

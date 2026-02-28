@@ -1,0 +1,97 @@
+package daemon
+
+import (
+	"errors"
+	"os"
+	"syscall"
+
+	"github.com/gravitl/netclient/ncutils"
+	"golang.org/x/exp/slog"
+)
+
+var (
+	LogFile = "/var/log/netclient.log"
+)
+
+// setupOpenRC - sets up openrc daemon
+func setupOpenRC() error {
+	service := `#!/sbin/openrc-run
+
+description="netclient daemon"
+pidfile="/var/run/netclient.pid"
+RC_SVCNAME="netclient"
+command="/sbin/netclient"
+command_args="daemon"
+command_user="root"
+supervisor="supervise-daemon"
+respawn_max=3
+respawn_period=10
+output_log="/var/log/netclient.log"
+error_log="/var/log/netclient.log"
+depend() {
+	after firewall
+}
+
+`
+	bytes := []byte(service)
+	if err := os.WriteFile("/etc/init.d/netclient", bytes, 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(LogFile); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.WriteFile(LogFile, []byte("--------------------"), 0644); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := ncutils.RunCmd("/sbin/rc-update add netclient default", false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func startOpenRC() error {
+	slog.Info("starting netclient service")
+	_, err := ncutils.RunCmd("/sbin/rc-service netclient start -N", false)
+	return err
+}
+
+func stopOpenRC() error {
+	if !ncutils.FileExists("/etc/init.d/netclient") {
+		// Service file doesn't exist, nothing to stop
+		return nil
+	}
+	slog.Info("stopping netclient service")
+	_, err := ncutils.RunCmd("/sbin/rc-service netclient stop -s", false)
+	return err
+}
+
+func restartOpenRC() error {
+	slog.Info("restarting netclient service")
+	if isDaemonProcess {
+		// Inside the daemon: self-signal for a soft restart via the main loop.
+		// Using os.Getpid() directly avoids the PID file which supervise-daemon
+		// may have overwritten with its own PID.
+		return syscall.Kill(os.Getpid(), syscall.SIGHUP)
+	}
+	// From a CLI process: go through the service manager so supervise-daemon
+	// properly cycles the daemon.
+	_, err := ncutils.RunCmd("/sbin/rc-service netclient restart", false)
+	return err
+}
+
+func removeOpenRC() error {
+	var faults string
+	if _, err := ncutils.RunCmd("/sbin/rc-update del netclient -a", false); err != nil {
+		faults = faults + err.Error()
+	}
+	if ncutils.FileExists("/etc/init.d/netclient") {
+		if err := os.Remove("/etc/init.d/netclient"); err != nil {
+			faults = faults + err.Error()
+		}
+	}
+	if faults != "" {
+		return errors.New(faults)
+	}
+	return nil
+}
