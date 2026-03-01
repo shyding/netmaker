@@ -42,8 +42,9 @@ import { UI_VERSION } from '../../config'
 import Logo from '../../netmaker-logo.png'
 import DarkLogo from '../../netmaker-logo-2.png'
 
-import { AccountTree, ViewList } from '@mui/icons-material'
+import { AccountTree, ViewList, InfoOutlined } from '@mui/icons-material'
 import { setUserSettings } from '../../store/modules/auth/actions'
+import { QuickStartModal } from '../dashboard/QuickStartModal'
 
 const drawerWidth = 240
 
@@ -202,6 +203,17 @@ export default function CustomDrawer() {
   const theme = useTheme()
   const [open, setOpen] = React.useState(false)
   const [clickOpen, setClickOpen] = React.useState(false)
+  const [quickStartOpen, setQuickStartOpen] = React.useState(false)
+
+  React.useEffect(() => {
+    if (isLoggedIn) {
+      const hasSeenQuickStart = localStorage.getItem('netmaker_quick_start_seen')
+      if (!hasSeenQuickStart) {
+        setQuickStartOpen(true)
+        localStorage.setItem('netmaker_quick_start_seen', 'true')
+      }
+    }
+  }, [isLoggedIn])
 
   const location = useLocation()
   const parts = location.pathname.split('/')
@@ -284,6 +296,14 @@ export default function CustomDrawer() {
         </DrawerHeader>
         <Divider />
         <List>
+          {isLoggedIn && (
+            <ListItemButton onClick={() => setQuickStartOpen(true)} sx={{ bgcolor: 'action.hover' }}>
+              <ListItemIcon>
+                <InfoOutlined color="info" />
+              </ListItemIcon>
+              <ListItemText primary="Quick Start Guide" primaryTypographyProps={{ color: 'info.main', fontWeight: 'bold' }} />
+            </ListItemButton>
+          )}
           {[
             { text: 'Dashboard', icon: <Dashboard />, link: '/' },
             { text: 'Networks', icon: <Wifi />, link: '/networks' },
@@ -439,6 +459,7 @@ export default function CustomDrawer() {
       <Box component="main" sx={{ flexGrow: 1, p: 3, margin: '1em 0 1em 0' }}>
         <DrawerHeader />
       </Box>
+      <QuickStartModal open={quickStartOpen} onClose={() => setQuickStartOpen(false)} />
     </Box>
   )
 }
