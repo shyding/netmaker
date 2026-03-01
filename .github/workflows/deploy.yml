@@ -37,35 +37,75 @@ jobs:
           go mod download
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o netmaker-linux .
 
-      - name: Build Netclient (Multi-platform)
+      - name: Check Netclient changes
+        id: check-netclient
         run: |
+          # Get the last commit that modified netclient directory
+          NETCLIENT_COMMIT=$(git log -1 --format=%H -- netclient/)
+          echo "netclient_commit=$NETCLIENT_COMMIT" >> $GITHUB_OUTPUT
+          echo "Netclient last modified at commit: $NETCLIENT_COMMIT"
+
+      - name: Cache Netclient binaries
+        id: cache-netclient
+        uses: actions/cache@v3
+        with:
+          path: build/downloads
+          key: netclient-${{ steps.check-netclient.outputs.netclient_commit }}
+          restore-keys: |
+            netclient-
+
+      - name: Build Netclient (Multi-platform)
+        if: steps.cache-netclient.outputs.cache-hit != 'true'
+        run: |
+          echo "Building Netclient for all platforms..."
           cd netclient
           go mod download
 
+          # Create output directory
+          mkdir -p ../build/downloads
+
           # Linux AMD64
+          echo "Building Linux AMD64..."
           GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-amd64 .
 
           # Linux ARM64
+          echo "Building Linux ARM64..."
           GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm64 .
 
           # Linux ARM
+          echo "Building Linux ARM..."
           GOOS=linux GOARCH=arm go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm .
 
           # Windows AMD64
+          echo "Building Windows AMD64..."
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-windows-amd64.exe .
 
           # macOS AMD64
+          echo "Building macOS AMD64..."
           GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-amd64 .
 
           # macOS ARM64 (Apple Silicon)
+          echo "Building macOS ARM64..."
           GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-arm64 .
 
           # FreeBSD AMD64
+          echo "Building FreeBSD AMD64..."
           GOOS=freebsd GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-freebsd-amd64 .
 
           cd ../build/downloads
           sha256sum * > checksums.txt
           cd ../..
+          echo "✅ All platforms built successfully!"
+
+      - name: Verify Netclient binaries
+        run: |
+          if [ "${{ steps.cache-netclient.outputs.cache-hit }}" == "true" ]; then
+            echo "✅ Using cached Netclient binaries (no changes detected)"
+          else
+            echo "✅ Freshly built Netclient binaries"
+          fi
+          echo "Available binaries:"
+          ls -lh build/downloads/
 
       - name: Build Frontend
         run: |
