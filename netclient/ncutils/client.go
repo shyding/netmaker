@@ -69,8 +69,9 @@ func SendRequest(method, endpoint string, headers http.Header, data any) (*bytes
 	resp, err := client.Do(request)
 
 	// Automatic Downgrade: If the server is purely HTTP (no TLS proxy running), the secure HTTPS client request 
-	// will fail with "server gave HTTP response to HTTPS client". We catch this and intelligently retry over HTTP.
-	if err != nil && strings.Contains(err.Error(), "server gave HTTP response to HTTPS client") && strings.HasPrefix(endpoint, "https://") {
+	// will fail with "server gave HTTP response to HTTPS client" or "tls: first record...". We catch this and intelligently retry over HTTP.
+	isHTTPFallback := err != nil && (strings.Contains(err.Error(), "server gave HTTP response to HTTPS client") || strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake"))
+	if isHTTPFallback && strings.HasPrefix(endpoint, "https://") {
 		endpoint = strings.Replace(endpoint, "https://", "http://", 1)
 		
 		var retryReq *retryablehttp.Request

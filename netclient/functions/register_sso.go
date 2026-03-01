@@ -63,6 +63,10 @@ func RegisterWithSSO(registerData *RegisterSSO) (err error) {
 	socketUrl := strings.Replace(apiURL, "http", "ws", 1) + "/api/v1/auth-register/host"
 	// Dial the netmaker server controller
 	conn, _, err := websocket.DefaultDialer.Dial(socketUrl, nil)
+	if err != nil && strings.Contains(err.Error(), "tls: first record does not look like a TLS handshake") && strings.HasPrefix(socketUrl, "wss://") {
+		socketUrl = strings.Replace(socketUrl, "wss://", "ws://", 1)
+		conn, _, err = websocket.DefaultDialer.Dial(socketUrl, nil)
+	}
 	if err != nil {
 		logger.Log(0, fmt.Sprintf("error connecting to %s : %s", registerData.API, err.Error()))
 		return
