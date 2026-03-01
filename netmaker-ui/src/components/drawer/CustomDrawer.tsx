@@ -34,7 +34,7 @@ import { PathBreadcrumbs } from '~components/PathBreadcrumbs'
 import { useTranslation } from 'react-i18next'
 import { ListItemButton, Switch } from '@mui/material'
 import { useDispatch, useSelector } from 'react-redux'
-import { useLocation, useRouteMatch, Link } from 'react-router-dom'
+import { useLocation, useRouteMatch, Link, useHistory } from 'react-router-dom'
 import { authSelectors, serverSelectors } from '../../store/selectors'
 import { logout } from '../../store/modules/auth/actions'
 import { NmLink } from '../../components/Link'
@@ -189,6 +189,7 @@ export const LoginLink: React.FC = ({ children }) => {
 export default function CustomDrawer() {
   const match = useRouteMatch('/login')
   const showAuthButton = !match
+  const history = useHistory()
 
   const user = useSelector(authSelectors.getUser)
   const userSettings = useSelector(authSelectors.getUserSettings)
