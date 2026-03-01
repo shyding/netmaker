@@ -322,7 +322,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
                 </Typography>
                 <Typography variant="body2" color="textSecondary" paragraph>
                   Download the official WireGuard app from Google Play or
-                  F-Droid
+                  as a Direct APK
                 </Typography>
 
                 <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
@@ -342,11 +342,11 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
                     color="primary"
                     fullWidth
                     startIcon={<DownloadIcon />}
-                    href="https://f-droid.org/packages/com.wireguard.android/"
+                    href="https://download.wireguard.com/android-client/"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    F-Droid
+                    Direct APK
                   </Button>
                 </Box>
 

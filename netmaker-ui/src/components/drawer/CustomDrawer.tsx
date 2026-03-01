@@ -397,7 +397,10 @@ export default function CustomDrawer() {
                   </ListItemIcon>
                   <ListItemText primary={user?.name} />
                 </ListItemButton>
-                <ListItemButton onClick={() => dispatch(logout())}>
+                <ListItemButton onClick={() => {
+                  dispatch(logout())
+                  history.push('/login')
+                }}>
                   <ListItemIcon aria-label={String(t('header.logout'))}>
                     <Logout />
                   </ListItemIcon>
