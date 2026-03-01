@@ -109,7 +109,7 @@ function Routes() {
               condition={(user) => {
                 if (user && `/users/${user?.name}` === location.pathname)
                   return true
-                return !!user?.isAdmin
+                return true
               }}
             >
               <UsersEE />
@@ -158,7 +158,7 @@ function Routes() {
               condition={(user) => {
                 if (user && `/users/${user?.name}` === location.pathname)
                   return true
-                return !!user?.isAdmin
+                return true
               }}
             >
               <UsersCommunity />

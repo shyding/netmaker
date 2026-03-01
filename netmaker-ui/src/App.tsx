@@ -28,16 +28,16 @@ function App() {
 
   React.useEffect(() => {
     const interval = setInterval(() => {
-      
+
       if (!isLoggedIn || (!!user && Date.now() / 1000 > user.exp && !window.location.href.includes('/login'))) {
         dispatch(logout())
       } else if (shouldSignOut) {
         dispatch(logout())
-      } else if (isLoggedIn && token && user && user.isAdmin) {
+      } else if (isLoggedIn && token && user) {
         dispatch(getNodes.request({ token }))
         dispatch(getHosts.request())
       }
-      
+
     }, 7500)
     return () => clearInterval(interval)
   }, [dispatch, user, isLoggedIn, token, shouldSignOut, currentACL])
