@@ -256,6 +256,135 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
         ))}
       </Grid>
 
+      <Box sx={{ mt: 6 }}>
+        <Typography variant="h4" gutterBottom textAlign="center">
+          Mobile Devices (Android & iOS)
+        </Typography>
+        <Typography
+          variant="body1"
+          color="textSecondary"
+          paragraph
+          textAlign="center"
+        >
+          For mobile devices, use the official WireGuard app with Netmaker's
+          Ingress Gateway
+        </Typography>
+
+        <Grid container spacing={3} sx={{ mt: 2 }}>
+          <Grid item xs={12} md={6}>
+            <Card className={classes.card}>
+              <CardContent>
+                <Box textAlign="center">
+                  <AppleIcon className={classes.platformIcon} />
+                </Box>
+                <Typography variant="h5" component="h2" gutterBottom>
+                  iOS / iPadOS
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Download the official WireGuard app from the App Store
+                </Typography>
+
+                <Button
+                  variant="contained"
+                  color="primary"
+                  fullWidth
+                  startIcon={<DownloadIcon />}
+                  href="https://apps.apple.com/us/app/wireguard/id1441195209"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{ mt: 2 }}
+                >
+                  Download from App Store
+                </Button>
+
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  <Typography variant="body2">
+                    <strong>How to connect:</strong>
+                    <br />
+                    1. Create an Ingress Gateway in your network
+                    <br />
+                    2. Generate an External Client config
+                    <br />
+                    3. Scan the QR code or import the config file
+                  </Typography>
+                </Alert>
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12} md={6}>
+            <Card className={classes.card}>
+              <CardContent>
+                <Box textAlign="center">
+                  <LinuxIcon className={classes.platformIcon} />
+                </Box>
+                <Typography variant="h5" component="h2" gutterBottom>
+                  Android
+                </Typography>
+                <Typography variant="body2" color="textSecondary" paragraph>
+                  Download the official WireGuard app from Google Play or
+                  F-Droid
+                </Typography>
+
+                <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    fullWidth
+                    startIcon={<DownloadIcon />}
+                    href="https://play.google.com/store/apps/details?id=com.wireguard.android"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Google Play
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    fullWidth
+                    startIcon={<DownloadIcon />}
+                    href="https://f-droid.org/packages/com.wireguard.android/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    F-Droid
+                  </Button>
+                </Box>
+
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  <Typography variant="body2">
+                    <strong>How to connect:</strong>
+                    <br />
+                    1. Create an Ingress Gateway in your network
+                    <br />
+                    2. Generate an External Client config
+                    <br />
+                    3. Scan the QR code or import the config file
+                  </Typography>
+                </Alert>
+              </CardContent>
+            </Card>
+          </Grid>
+        </Grid>
+
+        <Box sx={{ mt: 3 }}>
+          <Alert severity="success">
+            <Typography variant="body2">
+              <strong>Why use WireGuard app instead of Netclient?</strong>
+              <br />
+              • No root access required
+              <br />
+              • Better battery optimization
+              <br />
+              • Native mobile experience
+              <br />
+              • Official support and updates
+              <br />• Works seamlessly with Netmaker's Ingress Gateway
+            </Typography>
+          </Alert>
+        </Box>
+      </Box>
+
       <Box sx={{ mt: 4 }}>
         <Alert severity="warning">
           <Typography variant="body2">
