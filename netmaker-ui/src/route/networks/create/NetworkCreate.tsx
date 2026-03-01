@@ -200,12 +200,13 @@ export const NetworkCreate: React.FC = () => {
           >
             <Button
               onClick={() => {
+                const currentValues = formRef.current?.values
                 formRef.current?.reset(
                   {
-                    ...formRef.current?.values,
+                    ...currentValues,
                     netid: randomNetworkName(),
-                    addressrange: useIpv4 ? randomCIDR() : '',
-                    addressrange6: useIpv6 ? randomCIDR6() : '',
+                    addressrange: currentValues?.isipv4 ? randomCIDR() : '',
+                    addressrange6: currentValues?.isipv6 ? randomCIDR6() : '',
                     defaultudpholepunch: true,
                   },
                   { keepDefaultValues: true }
