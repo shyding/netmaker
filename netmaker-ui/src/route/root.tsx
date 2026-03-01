@@ -25,6 +25,7 @@ import { UsersCommunity } from './users/UsersCommunity'
 import { HostsPage } from './hosts/HostsPage'
 import { useEffect, useState } from 'react'
 import { EnrollmentKeysPage } from './enrollmentkeys/EnrollmentKeysPage'
+import { Downloads } from './downloads/Downloads'
 
 function Routes() {
   let location = useLocation()
@@ -118,6 +119,7 @@ function Routes() {
             >
               <UsersEE />
             </PrivateRoute>
+            <Route path="/downloads" children={<Downloads />} />
             <Route path="/login" children={<Login />} />
             <Route path="*">
               <NotFound />
@@ -171,6 +173,7 @@ function Routes() {
             >
               <UsersCommunity />
             </PrivateRoute>
+            <Route path="/downloads" children={<Downloads />} />
             <Route path="/login" children={<Login />} />
             <Route path="*">
               <NotFound />

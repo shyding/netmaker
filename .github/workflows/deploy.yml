@@ -37,6 +37,36 @@ jobs:
           go mod download
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o netmaker-linux .
 
+      - name: Build Netclient (Multi-platform)
+        run: |
+          cd netclient
+          go mod download
+
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-amd64 .
+
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm64 .
+
+          # Linux ARM
+          GOOS=linux GOARCH=arm go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm .
+
+          # Windows AMD64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-windows-amd64.exe .
+
+          # macOS AMD64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-amd64 .
+
+          # macOS ARM64 (Apple Silicon)
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-arm64 .
+
+          # FreeBSD AMD64
+          GOOS=freebsd GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-freebsd-amd64 .
+
+          cd ../build/downloads
+          sha256sum * > checksums.txt
+          cd ../..
+
       - name: Build Frontend
         run: |
           cd netmaker-ui
@@ -51,6 +81,9 @@ jobs:
           cp netmaker/netmaker-linux deploy-package/
           cp netmaker-ui/frontend-build.tar.gz deploy-package/
           cp -r netmaker/config deploy-package/ || true
+
+          # 打包 netclient 下载文件
+          tar -czf deploy-package/netclient-downloads.tar.gz build/downloads/
 
       - name: Copy files to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -106,6 +139,13 @@ jobs:
             window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
             EOF
 
+            echo "=== 部署 Netclient 下载文件 ==="
+            sudo mkdir -p $FRONTEND_DIR/downloads
+            cd /tmp/netmaker-deploy
+            tar -xzf netclient-downloads.tar.gz
+            sudo cp -r build/downloads/* $FRONTEND_DIR/downloads/
+            sudo chmod 644 $FRONTEND_DIR/downloads/*
+
             echo "=== 创建后端配置文件 ==="
             sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
             SERVER_HOST=0.0.0.0
@@ -160,6 +200,15 @@ jobs:
                     root /var/www/netmaker;
                     try_files $uri $uri/ /index.html;
                     add_header Cache-Control "no-cache";
+                }
+
+                # Netclient 下载
+                location /downloads {
+                    root /var/www/netmaker;
+                    autoindex on;
+                    autoindex_exact_size off;
+                    autoindex_localtime on;
+                    add_header Content-Disposition "attachment";
                 }
 
                 # 后端 API
