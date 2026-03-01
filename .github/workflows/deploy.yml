@@ -57,7 +57,7 @@ jobs:
 
       - name: Cache binary
         id: cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: netclient/${{ matrix.name }}
           key: netclient-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.check-changes.outputs.commit }}
@@ -73,9 +73,9 @@ jobs:
           echo "✅ ${{ matrix.name }} built successfully"
 
       - name: Upload binary
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: netclient-binaries
+          name: netclient-${{ matrix.goos }}-${{ matrix.goarch }}
           path: netclient/${{ matrix.name }}
           retention-days: 1
 
@@ -307,12 +307,13 @@ jobs:
     if: always()  # 即使编译失败也执行，尝试部署可用的二进制文件
 
     steps:
-      - name: Download Netclient binaries
-        uses: actions/download-artifact@v3
+      - name: Download all Netclient binaries
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: netclient-binaries
+          pattern: netclient-*
           path: downloads/
+          merge-multiple: true
 
       - name: Generate checksums
         continue-on-error: true
