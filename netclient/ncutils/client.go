@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gravitl/netmaker/models"
@@ -27,6 +28,7 @@ func (e ErrStatusNotOk) Error() string {
 }
 
 func SendRequest(method, endpoint string, headers http.Header, data any) (*bytes.Buffer, error) {
+
 	var request *retryablehttp.Request
 	var err error
 
@@ -65,6 +67,28 @@ func SendRequest(method, endpoint string, headers http.Header, data any) (*bytes
 	}
 	client.RetryWaitMin = 5 * time.Second
 	resp, err := client.Do(request)
+
+	// Automatic Downgrade: If the server is purely HTTP (no TLS proxy running), the secure HTTPS client request 
+	// will fail with "server gave HTTP response to HTTPS client". We catch this and intelligently retry over HTTP.
+	if err != nil && strings.Contains(err.Error(), "server gave HTTP response to HTTPS client") && strings.HasPrefix(endpoint, "https://") {
+		endpoint = strings.Replace(endpoint, "https://", "http://", 1)
+		
+		var retryReq *retryablehttp.Request
+		if data != nil {
+			payload, _ := json.Marshal(data)
+			retryReq, _ = retryablehttp.NewRequestWithContext(context.TODO(), method, endpoint, bytes.NewBuffer(payload))
+			retryReq.Header.Set("Content-Type", "application/json")
+		} else {
+			retryReq, _ = retryablehttp.NewRequestWithContext(context.TODO(), method, endpoint, nil)
+		}
+		for key, value := range headers {
+			retryReq.Header.Set(key, value[0])
+		}
+		
+		// Re-attempt the downgraded HTTP request
+		resp, err = client.Do(retryReq)
+	}
+
 	if err != nil {
 		return nil, err
 	}
