@@ -51,7 +51,8 @@ const useStyles = makeStyles((theme: any) => ({
     marginTop: theme.spacing(2),
   },
   codeBlock: {
-    backgroundColor: theme.palette.grey[100],
+    backgroundColor: theme.palette.mode === 'dark' ? '#1e1e1e' : theme.palette.grey[100],
+    color: theme.palette.mode === 'dark' ? '#d4d4d4' : 'inherit',
     padding: theme.spacing(2),
     borderRadius: theme.shape.borderRadius,
     fontFamily: 'monospace',
