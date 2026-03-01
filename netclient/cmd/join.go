@@ -6,7 +6,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime"
 
+	"github.com/gravitl/netclient/daemon"
 	"github.com/gravitl/netclient/functions"
 	"github.com/gravitl/netmaker/logger"
 	"github.com/spf13/cobra"
@@ -29,14 +31,31 @@ user: netclient join -s <server> -u <user_name> // attempt to join/register via 
 		setHostFields(cmd)
 		functions.Push(false)
 		token, err := cmd.Flags().GetString(registerFlags.Token)
+		
+		handleWindowsAutoInstall := func() {
+			if runtime.GOOS == "windows" {
+				fmt.Println("Registration successful. Auto-installing and starting Windows service...")
+				if err := daemon.Install(); err != nil {
+					logger.Log(0, "failed to install daemon", err.Error())
+				} else if err := daemon.Start(); err != nil {
+					logger.Log(0, "failed to start daemon", err.Error())
+				} else {
+					fmt.Println("Windows service installed and started successfully.")
+				}
+			}
+		}
+
 		if err != nil || len(token) == 0 {
 			if regErr := checkUserRegistration(cmd); regErr != nil {
 				cmd.Usage()
 				return
 			}
+			handleWindowsAutoInstall()
 		} else {
 			if err := functions.Register(token); err != nil {
 				logger.Log(0, "registration failed", err.Error())
+			} else {
+				handleWindowsAutoInstall()
 			}
 		}
 	},
