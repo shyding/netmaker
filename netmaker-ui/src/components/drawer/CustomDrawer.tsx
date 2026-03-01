@@ -359,7 +359,7 @@ export default function CustomDrawer() {
             </ListItemButton>
           ))}
         </List>
-        {isLoggedIn && user!.isAdmin ? (
+        {isLoggedIn ? (
           <>
             <Divider />
             <List>
