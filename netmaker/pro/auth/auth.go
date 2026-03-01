@@ -229,7 +229,12 @@ func HandleHeadlessSSO(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	redirectUrl = fmt.Sprintf("https://%s/api/oauth/register/%s", servercfg.GetAPIConnString(), stateStr)
+	apiConn := servercfg.GetAPIConnString()
+	scheme := "https"
+	if strings.Contains(apiConn, ":80") || strings.HasPrefix(apiConn, "localhost") || strings.HasPrefix(apiConn, "127.0.0.1") {
+		scheme = "http"
+	}
+	redirectUrl = fmt.Sprintf("%s://%s/api/oauth/register/%s", scheme, apiConn, stateStr)
 	if err = conn.WriteMessage(websocket.TextMessage, []byte(redirectUrl)); err != nil {
 		logger.Log(0, "error during message writing:", err.Error())
 	}
