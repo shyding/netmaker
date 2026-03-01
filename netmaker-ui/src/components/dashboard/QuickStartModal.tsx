@@ -5,15 +5,12 @@ import {
     DialogContent,
     DialogActions,
     Button,
-    Stepper,
-    Step,
-    StepLabel,
-    StepContent,
     Typography,
     Tabs,
     Tab,
     Box,
     Divider,
+    Paper,
 } from '@mui/material'
 import { useHistory } from 'react-router-dom'
 
@@ -56,7 +53,6 @@ export const QuickStartModal: React.FC<QuickStartModalProps> = ({
     open,
     onClose,
 }) => {
-    const [activeStep, setActiveStep] = useState(0)
     const [tabValue, setTabValue] = useState(0)
     const history = useHistory()
 
@@ -91,10 +87,6 @@ export const QuickStartModal: React.FC<QuickStartModalProps> = ({
         },
     ]
 
-    const handleNext = () => setActiveStep((prev) => prev + 1)
-    const handleBack = () => setActiveStep((prev) => prev - 1)
-    const handleReset = () => setActiveStep(0)
-
     return (
         <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
             <DialogTitle>Netmaker Guides & Tutorials (系统指南与进阶教程)</DialogTitle>
@@ -112,26 +104,26 @@ export const QuickStartModal: React.FC<QuickStartModalProps> = ({
 
                 {/* TAB 1: QUICK START */}
                 <TabPanel value={tabValue} index={0}>
-                    <Typography variant="h6" gutterBottom>Quick Start Guide</Typography>
-                    <Stepper activeStep={activeStep} orientation="vertical">
+                    <Typography variant="h6" gutterBottom>Quick Start Guide (快速开始向导)</Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
                         {steps.map((step, index) => (
-                            <Step key={step.label}>
-                                <StepLabel>{step.label}</StepLabel>
-                                <StepContent>
-                                    <Typography>{step.description}</Typography>
-                                    <Box sx={{ mt: 2 }}>
-                                        <Button variant="contained" onClick={() => { step.action(); onClose(); }} size="small" sx={{ mr: 1 }}>
-                                            {step.actionText}
-                                        </Button>
-                                        <Button disabled={index === 0} onClick={handleBack} sx={{ mt: 1, mr: 1 }}>Back</Button>
-                                        <Button variant="outlined" onClick={index === steps.length - 1 ? handleReset : handleNext} sx={{ mt: 1, mr: 1 }}>
-                                            {index === steps.length - 1 ? 'Finish' : 'Next'}
-                                        </Button>
-                                    </Box>
-                                </StepContent>
-                            </Step>
+                            <Paper key={index} elevation={1} sx={{ p: 2, borderLeft: '4px solid #1976d2' }}>
+                                <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                                    {step.label}
+                                </Typography>
+                                <Typography variant="body2" sx={{ mt: 1, mb: 2, color: 'text.secondary' }}>
+                                    {step.description}
+                                </Typography>
+                                <Button
+                                    variant="outlined"
+                                    size="small"
+                                    onClick={() => { step.action(); onClose(); }}
+                                >
+                                    {step.actionText}
+                                </Button>
+                            </Paper>
                         ))}
-                    </Stepper>
+                    </Box>
                 </TabPanel>
 
                 {/* TAB 2: CORE CONCEPTS */}

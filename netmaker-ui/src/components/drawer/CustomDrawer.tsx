@@ -42,9 +42,10 @@ import { UI_VERSION } from '../../config'
 import Logo from '../../netmaker-logo.png'
 import DarkLogo from '../../netmaker-logo-2.png'
 
-import { AccountTree, ViewList, InfoOutlined } from '@mui/icons-material'
+import { AccountTree, ViewList, HelpOutline } from '@mui/icons-material'
 import { setUserSettings } from '../../store/modules/auth/actions'
 import { QuickStartModal } from '../dashboard/QuickStartModal'
+import { Tooltip, Button } from '@mui/material'
 
 const drawerWidth = 240
 
@@ -215,6 +216,18 @@ export default function CustomDrawer() {
     }
   }, [isLoggedIn])
 
+  // Global Keyboard Shortcut for Quick Start Modal (Ctrl+/ or Cmd+/)
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '/') {
+        e.preventDefault()
+        setQuickStartOpen((prev) => !prev)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
   const location = useLocation()
   const parts = location.pathname.split('/')
   const netid = parts.length > 2 ? parts[2] : false
@@ -272,6 +285,21 @@ export default function CustomDrawer() {
                 alt="Netmaker makes networks."
               />
             </div>
+            {isLoggedIn && (
+              <Box sx={{ display: 'flex', alignItems: 'center', ml: 'auto' }}>
+                <Tooltip title="View Guides & Tutorials (Ctrl+/)">
+                  <Button
+                    variant="text"
+                    color="inherit"
+                    onClick={() => setQuickStartOpen(true)}
+                    startIcon={<HelpOutline />}
+                    sx={{ textTransform: 'none', fontWeight: 'bold' }}
+                  >
+                    Guides
+                  </Button>
+                </Tooltip>
+              </Box>
+            )}
           </div>
         </Toolbar>
         <div style={styles.central}>
@@ -296,14 +324,6 @@ export default function CustomDrawer() {
         </DrawerHeader>
         <Divider />
         <List>
-          {isLoggedIn && (
-            <ListItemButton onClick={() => setQuickStartOpen(true)} sx={{ bgcolor: 'action.hover' }}>
-              <ListItemIcon>
-                <InfoOutlined color="info" />
-              </ListItemIcon>
-              <ListItemText primary="Quick Start Guide" primaryTypographyProps={{ color: 'info.main', fontWeight: 'bold' }} />
-            </ListItemButton>
-          )}
           {[
             { text: 'Dashboard', icon: <Dashboard />, link: '/' },
             { text: 'Networks', icon: <Wifi />, link: '/networks' },
