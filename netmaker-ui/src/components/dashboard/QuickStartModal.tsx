@@ -215,6 +215,29 @@ export const QuickStartModal: React.FC<QuickStartModalProps> = ({
                         <li><Typography variant="body2" component="span" sx={{ fontFamily: 'monospace' }}>sudo systemctl restart netclient</Typography> - Force the daemon to grab the latest routing tables from the server.</li>
                         <li><Typography variant="body2" component="span" sx={{ fontFamily: 'monospace' }}>sudo netclient pull</Typography> - Manually force a pull of the latest network topology configurations.</li>
                     </ul>
+
+                    <Divider sx={{ my: 3 }} />
+
+                    <Typography variant="h6" color="error" gutterBottom>Windows Re-join & Cleanup (Windows 节点彻底重置指南)</Typography>
+                    <Typography variant="body2" paragraph>
+                        如果在 Windows 上遇到节点无响应、无法连通需要“回炉重造”，在网页端删除节点后，<strong>必须在本地（管理员命令行）执行以下彻底清理步骤</strong>，否则会残留幽灵配置导致二次加入失败：
+                    </Typography>
+
+                    <Box sx={{ bgcolor: '#1e1e1e', color: '#d4d4d4', p: 2, borderRadius: 1, fontFamily: 'monospace', mb: 2 }}>
+                        <Typography variant="caption" color="gray" sx={{ display: 'block', mb: 1 }}># 1. 杀掉服务和进程</Typography>
+                        sc stop netclient<br />
+                        sc delete netclient<br />
+                        taskkill /F /IM netclient.exe /T<br />
+                        taskkill /F /IM netclient-windows-amd64* /T<br /><br />
+
+                        <Typography variant="caption" color="gray" sx={{ display: 'block', mb: 1 }}># 2. 摧毁旧配置文件 (极其关键)</Typography>
+                        rd /s /q "C:\Program Files (x86)\Netclient"<br /><br />
+
+                        <Typography variant="caption" color="gray" sx={{ display: 'block', mb: 1 }}># 3. 重新加入并启动服务</Typography>
+                        netclient-windows-amd64.exe join -t "你的超长Token"<br />
+                        netclient-windows-amd64.exe install<br />
+                        sc start netclient
+                    </Box>
                 </TabPanel>
 
             </DialogContent>
