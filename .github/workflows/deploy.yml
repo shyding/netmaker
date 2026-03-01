@@ -209,37 +209,37 @@ jobs:
               fi
 
               sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
-              SERVER_HOST=0.0.0.0
-              API_PORT=8081
-              MASTER_KEY=${{ secrets.NETMAKER_MASTER_KEY }}
-              DATABASE=sqlite
-              SQL_CONN=$INSTALL_DIR/netmaker.db
-              CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
-              SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
-EOF
+            SERVER_HOST=0.0.0.0
+            API_PORT=8081
+            MASTER_KEY=${{ secrets.NETMAKER_MASTER_KEY }}
+            DATABASE=sqlite
+            SQL_CONN=$INSTALL_DIR/netmaker.db
+            CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
+            SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
+            EOF
 
               sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
-              [Unit]
-              Description=Netmaker Server
-              After=network.target
+            [Unit]
+            Description=Netmaker Server
+            After=network.target
 
-              [Service]
-              Type=simple
-              User=root
-              WorkingDirectory=/opt/netmaker
-              EnvironmentFile=/opt/netmaker/server.env
-              ExecStart=/opt/netmaker/netmaker
-              Restart=always
-              RestartSec=10
-              StandardOutput=append:/var/log/netmaker/netmaker.log
-              StandardError=append:/var/log/netmaker/netmaker-error.log
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=/opt/netmaker
+            EnvironmentFile=/opt/netmaker/server.env
+            ExecStart=/opt/netmaker/netmaker
+            Restart=always
+            RestartSec=10
+            StandardOutput=append:/var/log/netmaker/netmaker.log
+            StandardError=append:/var/log/netmaker/netmaker-error.log
 
-              NoNewPrivileges=true
-              PrivateTmp=true
+            NoNewPrivileges=true
+            PrivateTmp=true
 
-              [Install]
-              WantedBy=multi-user.target
-EOF
+            [Install]
+            WantedBy=multi-user.target
+            EOF
               sudo systemctl daemon-reload
               sudo systemctl enable netmaker
               sudo systemctl start netmaker
@@ -256,37 +256,37 @@ EOF
               sudo cp -R build/* $FRONTEND_DIR/
               
               sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
-              window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
-EOF
+            window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
+            EOF
 
               sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
-              server {
-                  listen 8888;
-                  server_name ${{ secrets.DOMAIN_NAME }};
+            server {
+                listen 8888;
+                server_name ${{ secrets.DOMAIN_NAME }};
 
-                  location / {
-                      root /var/www/netmaker;
-                      try_files $uri $uri/ /index.html;
-                      add_header Cache-Control "no-cache";
-                  }
+                location / {
+                    root /var/www/netmaker;
+                    try_files $uri $uri/ /index.html;
+                    add_header Cache-Control "no-cache";
+                }
 
-                  location /downloads {
-                      root /var/www/netmaker;
-                      autoindex on;
-                      autoindex_exact_size off;
-                      autoindex_localtime on;
-                      add_header Content-Disposition "attachment";
-                  }
+                location /downloads {
+                    root /var/www/netmaker;
+                    autoindex on;
+                    autoindex_exact_size off;
+                    autoindex_localtime on;
+                    add_header Content-Disposition "attachment";
+                }
 
-                  location /api {
-                      proxy_pass http://localhost:8081;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-Forwarded-Proto $scheme;
-                  }
-              }
-EOF
+                location /api {
+                    proxy_pass http://localhost:8081;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+            EOF
               sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
               if ! grep -q "include /etc/nginx/sites-enabled/\*;" /etc/nginx/nginx.conf; then
                 sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
