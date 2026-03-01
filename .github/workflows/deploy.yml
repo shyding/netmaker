@@ -12,7 +12,75 @@ env:
   NODE_VERSION: '17'
 
 jobs:
-  build-and-deploy:
+  # 客户端编译 - 并行执行，失败不影响部署
+  build-netclient:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # 失败不影响整个 workflow
+    strategy:
+      fail-fast: false  # 一个平台失败不影响其他平台
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            name: netclient-linux-amd64
+          - goos: linux
+            goarch: arm64
+            name: netclient-linux-arm64
+          - goos: linux
+            goarch: arm
+            name: netclient-linux-arm
+          - goos: windows
+            goarch: amd64
+            name: netclient-windows-amd64.exe
+          - goos: darwin
+            goarch: amd64
+            name: netclient-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            name: netclient-darwin-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check Netclient changes
+        id: check-changes
+        run: |
+          NETCLIENT_COMMIT=$(git log -1 --format=%H -- netclient/)
+          echo "commit=$NETCLIENT_COMMIT" >> $GITHUB_OUTPUT
+          echo "Last netclient commit: $NETCLIENT_COMMIT"
+
+      - name: Cache binary
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: netclient/${{ matrix.name }}
+          key: netclient-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.check-changes.outputs.commit }}
+
+      - name: Build ${{ matrix.name }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd netclient
+          go mod download
+          echo "Building ${{ matrix.name }}..."
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o ${{ matrix.name }} .
+          ls -lh ${{ matrix.name }}
+          echo "✅ ${{ matrix.name }} built successfully"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: netclient-binaries
+          path: netclient/${{ matrix.name }}
+          retention-days: 1
+
+  # 服务端部署 - 独立执行，不等待客户端
+  deploy-server:
     runs-on: ubuntu-latest
 
     steps:
@@ -37,76 +105,6 @@ jobs:
           go mod download
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o netmaker-linux .
 
-      - name: Check Netclient changes
-        id: check-netclient
-        run: |
-          # Get the last commit that modified netclient directory
-          NETCLIENT_COMMIT=$(git log -1 --format=%H -- netclient/)
-          echo "netclient_commit=$NETCLIENT_COMMIT" >> $GITHUB_OUTPUT
-          echo "Netclient last modified at commit: $NETCLIENT_COMMIT"
-
-      - name: Cache Netclient binaries
-        id: cache-netclient
-        uses: actions/cache@v3
-        with:
-          path: build/downloads
-          key: netclient-${{ steps.check-netclient.outputs.netclient_commit }}
-          restore-keys: |
-            netclient-
-
-      - name: Build Netclient (Multi-platform)
-        if: steps.cache-netclient.outputs.cache-hit != 'true'
-        run: |
-          echo "Building Netclient for all platforms..."
-          cd netclient
-          go mod download
-
-          # Create output directory
-          mkdir -p ../build/downloads
-
-          # Linux AMD64
-          echo "Building Linux AMD64..."
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-amd64 .
-
-          # Linux ARM64
-          echo "Building Linux ARM64..."
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm64 .
-
-          # Linux ARM
-          echo "Building Linux ARM..."
-          GOOS=linux GOARCH=arm go build -ldflags="-s -w" -o ../build/downloads/netclient-linux-arm .
-
-          # Windows AMD64
-          echo "Building Windows AMD64..."
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-windows-amd64.exe .
-
-          # macOS AMD64
-          echo "Building macOS AMD64..."
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-amd64 .
-
-          # macOS ARM64 (Apple Silicon)
-          echo "Building macOS ARM64..."
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../build/downloads/netclient-darwin-arm64 .
-
-          # FreeBSD AMD64
-          echo "Building FreeBSD AMD64..."
-          GOOS=freebsd GOARCH=amd64 go build -ldflags="-s -w" -o ../build/downloads/netclient-freebsd-amd64 .
-
-          cd ../build/downloads
-          sha256sum * > checksums.txt
-          cd ../..
-          echo "✅ All platforms built successfully!"
-
-      - name: Verify Netclient binaries
-        run: |
-          if [ "${{ steps.cache-netclient.outputs.cache-hit }}" == "true" ]; then
-            echo "✅ Using cached Netclient binaries (no changes detected)"
-          else
-            echo "✅ Freshly built Netclient binaries"
-          fi
-          echo "Available binaries:"
-          ls -lh build/downloads/
-
       - name: Build Frontend
         run: |
           cd netmaker-ui
@@ -121,9 +119,6 @@ jobs:
           cp netmaker/netmaker-linux deploy-package/
           cp netmaker-ui/frontend-build.tar.gz deploy-package/
           cp -r netmaker/config deploy-package/ || true
-
-          # 打包 netclient 下载文件
-          tar -czf deploy-package/netclient-downloads.tar.gz build/downloads/
 
       - name: Copy files to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -178,13 +173,6 @@ jobs:
             sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
             window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
             EOF
-
-            echo "=== 部署 Netclient 下载文件 ==="
-            sudo mkdir -p $FRONTEND_DIR/downloads
-            cd /tmp/netmaker-deploy
-            tar -xzf netclient-downloads.tar.gz
-            sudo cp -r build/downloads/* $FRONTEND_DIR/downloads/
-            sudo chmod 644 $FRONTEND_DIR/downloads/*
 
             echo "=== 创建后端配置文件 ==="
             sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
@@ -305,9 +293,81 @@ jobs:
         if: always()
         run: |
           if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ 部署成功！"
+            echo "✅ 服务端部署成功！"
             echo "前端: http://${{ secrets.DOMAIN_NAME }}:8888"
             echo "后端: ${{ secrets.BACKEND_URL }}"
           else
-            echo "❌ 部署失败，请检查日志"
+            echo "❌ 服务端部署失败，请检查日志"
           fi
+
+  # 部署客户端二进制文件 - 在客户端编译完成后执行
+  deploy-netclient:
+    runs-on: ubuntu-latest
+    needs: build-netclient
+    if: always()  # 即使编译失败也执行，尝试部署可用的二进制文件
+
+    steps:
+      - name: Download Netclient binaries
+        uses: actions/download-artifact@v3
+        continue-on-error: true
+        with:
+          name: netclient-binaries
+          path: downloads/
+
+      - name: Generate checksums
+        continue-on-error: true
+        run: |
+          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
+            cd downloads
+            sha256sum * > checksums.txt
+            echo "✅ Checksums generated"
+            echo "Available binaries:"
+            ls -lh
+            cd ..
+          else
+            echo "⚠️ No netclient binaries found"
+            exit 0
+          fi
+
+      - name: Package binaries
+        continue-on-error: true
+        run: |
+          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
+            tar -czf netclient-downloads.tar.gz downloads/
+            echo "✅ Binaries packaged"
+          fi
+
+      - name: Deploy Netclient binaries to VPS
+        if: hashFiles('netclient-downloads.tar.gz') != ''
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "netclient-downloads.tar.gz"
+          target: "/tmp/"
+
+      - name: Extract and deploy on VPS
+        if: hashFiles('netclient-downloads.tar.gz') != ''
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            if [ -f "/tmp/netclient-downloads.tar.gz" ]; then
+              echo "=== 部署 Netclient 下载文件 ==="
+              sudo mkdir -p /var/www/netmaker/downloads
+              cd /tmp
+              tar -xzf netclient-downloads.tar.gz
+              sudo cp -r downloads/* /var/www/netmaker/downloads/
+              sudo chmod 644 /var/www/netmaker/downloads/*
+              rm -rf downloads netclient-downloads.tar.gz
+              echo "✅ Netclient binaries deployed"
+              echo "Available at: http://${{ secrets.DOMAIN_NAME }}:8888/downloads/"
+              ls -lh /var/www/netmaker/downloads/
+            else
+              echo "⚠️ No netclient binaries to deploy"
+            fi
