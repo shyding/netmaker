@@ -1,5 +1,4 @@
 import React from 'react'
-import { useTranslation } from 'react-i18next'
 import {
   Box,
   Button,
@@ -75,7 +74,6 @@ interface DownloadOption {
 }
 
 export const Downloads: React.FC = () => {
-  const { t } = useTranslation()
   const classes = useStyles()
   const version = 'v1.5.0'
   const baseUrl = window.location.origin
