@@ -119,3 +119,13 @@ func SendRequest(method, endpoint string, headers http.Header, data any) (*bytes
 
 	return &body, nil
 }
+
+// GetAPIURL - ensures that the API endpoint has a schema (http:// or https://)
+// defaults to https:// if none is provided
+func GetAPIURL(api string) string {
+	if !strings.HasPrefix(api, "http://") && !strings.HasPrefix(api, "https://") {
+		return "https://" + api
+	}
+	return api
+}
+

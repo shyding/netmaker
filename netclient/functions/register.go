@@ -53,7 +53,7 @@ func Register(token string) error {
 	cleanServer := strings.TrimPrefix(serverData.Server, "http://")
 	cleanServer = strings.TrimPrefix(cleanServer, "https://")
 
-	url := fmt.Sprintf("https://%s/api/v1/host/register/%s", cleanServer, token)
+	url := fmt.Sprintf("%s/api/v1/host/register/%s", ncutils.GetAPIURL(cleanServer), token)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	respBytes, err := ncutils.SendRequest(http.MethodPost, url, headers, host)

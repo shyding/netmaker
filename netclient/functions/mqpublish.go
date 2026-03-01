@@ -151,7 +151,7 @@ func hostUpdateWithServer(server *config.Server, hu models.HostUpdate) error {
 	}
 	hu.Host = host.Host
 
-	url := fmt.Sprintf("https://%s/api/v1/fallback/host/%s", server.API, host.ID.String())
+	url := fmt.Sprintf("%s/api/v1/fallback/host/%s", ncutils.GetAPIURL(server.API), host.ID.String())
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	headers.Set("Authorization", "Bearer "+token)
