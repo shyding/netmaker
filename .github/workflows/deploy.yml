@@ -270,6 +270,11 @@ jobs:
                     add_header Cache-Control "no-cache";
                 }
 
+                location ~ ^/downloads/?$ {
+                    root /var/www/netmaker;
+                    rewrite ^ /index.html break;
+                }
+
                 location /dl {
                     alias /var/www/netmaker/downloads/;
                     autoindex on;
