@@ -59,7 +59,8 @@ func RegisterWithSSO(registerData *RegisterSSO) (err error) {
 		host = config.Netclient()
 	}
 
-	socketUrl := fmt.Sprintf("wss://%s/api/v1/auth-register/host", registerData.API)
+	apiURL := ncutils.GetAPIURL(registerData.API)
+	socketUrl := strings.Replace(apiURL, "http", "ws", 1) + "/api/v1/auth-register/host"
 	// Dial the netmaker server controller
 	conn, _, err := websocket.DefaultDialer.Dial(socketUrl, nil)
 	if err != nil {
