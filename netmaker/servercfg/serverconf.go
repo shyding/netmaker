@@ -77,6 +77,16 @@ func GetAPIConnString() string {
 	} else if config.Config.Server.APIConnString != "" {
 		conn = config.Config.Server.APIConnString
 	}
+	if conn == "" {
+		port := GetAPIPort()
+		if port == "80" || port == "443" {
+			conn = GetAPIHost()
+		} else {
+			conn = GetAPIHost() + ":" + port
+		}
+	}
+	conn = strings.TrimPrefix(conn, "http://")
+	conn = strings.TrimPrefix(conn, "https://")
 	return conn
 }
 
