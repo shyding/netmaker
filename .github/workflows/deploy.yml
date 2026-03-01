@@ -208,6 +208,10 @@ jobs:
                 sudo cp -r /tmp/netmaker-deploy/netmaker/config/* $INSTALL_DIR/config/ || true
               fi
 
+              # Strip http:// or https:// from BACKEND_URL for the backend
+              RAW_URL="${{ secrets.BACKEND_URL }}"
+              CLEAN_HTTP_HOST="${RAW_URL#*//}"
+
               sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
             SERVER_HOST=0.0.0.0
             API_PORT=8081
@@ -215,7 +219,7 @@ jobs:
             DATABASE=sqlite
             SQL_CONN=$INSTALL_DIR/netmaker.db
             CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
-            SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
+            SERVER_HTTP_HOST=${CLEAN_HTTP_HOST}
             EOF
 
               sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
