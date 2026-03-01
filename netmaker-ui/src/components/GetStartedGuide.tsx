@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -62,12 +62,30 @@ export const GetStartedGuide: React.FC<GetStartedGuideProps> = ({
   const classes = useStyles()
   const [activeStep, setActiveStep] = useState(0)
   const [copied, setCopied] = useState<{ [key: string]: boolean }>({})
+  const timeoutRefs = useRef<{ [key: string]: NodeJS.Timeout }>({})
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(timeoutRefs.current).forEach((timeout) => {
+        clearTimeout(timeout)
+      })
+    }
+  }, [])
 
   const handleCopy = (text: string, key: string) => {
     copy(text)
-    setCopied({ ...copied, [key]: true })
-    setTimeout(() => {
-      setCopied({ ...copied, [key]: false })
+    setCopied((prev) => ({ ...prev, [key]: true }))
+
+    // Clear existing timeout for this key
+    if (timeoutRefs.current[key]) {
+      clearTimeout(timeoutRefs.current[key])
+    }
+
+    // Set new timeout
+    timeoutRefs.current[key] = setTimeout(() => {
+      setCopied((prev) => ({ ...prev, [key]: false }))
+      delete timeoutRefs.current[key]
     }, 2000)
   }
 
