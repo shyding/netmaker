@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/gravitl/netclient/config"
@@ -48,8 +49,11 @@ func Register(token string) error {
 	if shouldUpdateHost { // get most up to date values before submitting to server
 		host = config.Netclient()
 	}
+	// ensure we strip any schema that might have leaked into the token's server string
+	cleanServer := strings.TrimPrefix(serverData.Server, "http://")
+	cleanServer = strings.TrimPrefix(cleanServer, "https://")
 
-	url := fmt.Sprintf("https://%s/api/v1/host/register/%s", serverData.Server, token)
+	url := fmt.Sprintf("https://%s/api/v1/host/register/%s", cleanServer, token)
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	respBytes, err := ncutils.SendRequest(http.MethodPost, url, headers, host)
