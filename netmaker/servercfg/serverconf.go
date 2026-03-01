@@ -79,10 +79,11 @@ func GetAPIConnString() string {
 	}
 	if conn == "" {
 		port := GetAPIPort()
-		if port == "80" || port == "443" {
-			conn = GetAPIHost()
+		host := GetAPIHost()
+		if port == "80" || port == "443" || strings.Contains(host, ":") {
+			conn = host
 		} else {
-			conn = GetAPIHost() + ":" + port
+			conn = host + ":" + port
 		}
 	}
 	conn = strings.TrimPrefix(conn, "http://")
@@ -348,6 +349,12 @@ func GetServer() string {
 		server = os.Getenv("SERVER_NAME")
 	} else if config.Config.Server.Server != "" {
 		server = config.Config.Server.Server
+	}
+	if server == "" {
+		server = GetNmBaseDomain()
+	}
+	if server == "" {
+		server = "netmaker-default"
 	}
 	return server
 }
