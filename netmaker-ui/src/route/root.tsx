@@ -99,6 +99,7 @@ function Routes() {
             </PrivateRoute>
             <PrivateRoute
               path="/enrollment-keys"
+              to={{ pathname: '/' }}
               condition={(user) => {
                 return !!user?.isAdmin
               }}
@@ -150,6 +151,7 @@ function Routes() {
             </PrivateRoute>
             <PrivateRoute
               path="/enrollment-keys"
+              to={{ pathname: '/' }}
               condition={(user) => {
                 return !!user?.isAdmin
               }}
