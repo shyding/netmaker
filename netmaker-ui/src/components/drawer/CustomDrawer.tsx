@@ -29,6 +29,7 @@ import LibraryBooks from '@mui/icons-material/LibraryBooks'
 import Person from '@mui/icons-material/Person'
 import ComputerIcon from '@mui/icons-material/Computer'
 import KeyIcon from '@mui/icons-material/Key'
+import DownloadIcon from '@mui/icons-material/Download'
 import { PathBreadcrumbs } from '~components/PathBreadcrumbs'
 import { useTranslation } from 'react-i18next'
 import { ListItemButton, Switch } from '@mui/material'
@@ -304,6 +305,11 @@ export default function CustomDrawer() {
               text: 'DNS',
               icon: <Language />,
               link: `/dns`,
+            },
+            {
+              text: 'Downloads',
+              icon: <DownloadIcon />,
+              link: `/downloads`,
             },
           ].map((item) => (
             <ListItemButton component={Link} to={item.link} key={item.text}>
