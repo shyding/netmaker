@@ -12,12 +12,42 @@ env:
   NODE_VERSION: '17'
 
 jobs:
-  # 客户端编译 - 并行执行，失败不影响部署
-  build-netclient:
+  # 步骤 1：检测目录变动
+  changes:
     runs-on: ubuntu-latest
-    continue-on-error: true  # 失败不影响整个 workflow
+    outputs:
+      netclient: ${{ steps.filter.outputs.netclient }}
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            netclient:
+              - 'netclient/**'
+              - 'models/**'
+              - 'logic/**'
+            backend:
+              - 'netmaker/**'
+              - 'models/**'
+              - 'logic/**'
+              - 'database/**'
+              - 'server/**'
+              - 'go.mod'
+              - 'go.sum'
+            frontend:
+              - 'netmaker-ui/**'
+
+  # 步骤 2.1：编译客户端（如果需要）
+  build-netclient:
+    needs: changes
+    if: needs.changes.outputs.netclient == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
-      fail-fast: false  # 一个平台失败不影响其他平台
+      fail-fast: false
       matrix:
         include:
           - goos: linux
@@ -40,37 +70,17 @@ jobs:
             name: netclient-darwin-arm64
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      - name: Check Netclient changes
-        id: check-changes
-        run: |
-          NETCLIENT_COMMIT=$(git log -1 --format=%H -- netclient/)
-          echo "commit=$NETCLIENT_COMMIT" >> $GITHUB_OUTPUT
-          echo "Last netclient commit: $NETCLIENT_COMMIT"
-
-      - name: Cache binary
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: netclient/${{ matrix.name }}
-          key: netclient-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.check-changes.outputs.commit }}
+          cache-dependency-path: 'netclient/go.sum'
 
       - name: Build ${{ matrix.name }}
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           cd netclient
           go mod download
-          echo "Building ${{ matrix.name }}..."
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o ${{ matrix.name }} .
-          ls -lh ${{ matrix.name }}
-          echo "✅ ${{ matrix.name }} built successfully"
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -79,31 +89,45 @@ jobs:
           path: netclient/${{ matrix.name }}
           retention-days: 1
 
-  # 服务端部署 - 独立执行，不等待客户端
-  deploy-server:
+  # 步骤 2.2：编译后端（如果需要）
+  build-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          cache-dependency-path: 'netmaker/go.sum'
 
       - name: Build Backend
         run: |
           cd netmaker
           go mod download
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o netmaker-linux .
+
+      - name: Upload Backend
+        uses: actions/upload-artifact@v4
+        with:
+          name: netmaker-backend
+          path: |
+            netmaker/netmaker-linux
+            netmaker/config/
+          retention-days: 1
+
+  # 步骤 2.3：编译前端（如果需要）
+  build-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'netmaker-ui/package-lock.json'
 
       - name: Build Frontend
         run: |
@@ -113,12 +137,33 @@ jobs:
           npm run build
           tar -czf frontend-build.tar.gz build/
 
-      - name: Prepare deployment package
-        run: |
-          mkdir -p deploy-package
-          cp netmaker/netmaker-linux deploy-package/
-          cp netmaker-ui/frontend-build.tar.gz deploy-package/
-          cp -r netmaker/config deploy-package/ || true
+      - name: Upload Frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: netmaker-frontend
+          path: netmaker-ui/frontend-build.tar.gz
+          retention-days: 1
+
+  # 步骤 3：部署到 VPS（串联等待构建完成）
+  deploy:
+    needs: [changes, build-backend, build-frontend]
+    # 只要后端或前端至少有一个需要部署，就执行
+    if: always() && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Backend Artifact
+        if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: netmaker-backend
+          path: deploy-package/netmaker/
+
+      - name: Download Frontend Artifact
+        if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: netmaker-frontend
+          path: deploy-package/
 
       - name: Copy files to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -133,179 +178,140 @@ jobs:
 
       - name: Deploy on VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          UPDATE_FRONTEND: ${{ needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch' }}
+          UPDATE_BACKEND: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch' }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          envs: UPDATE_FRONTEND,UPDATE_BACKEND
           script: |
             set -e
-
-            # 定义安装目录
             INSTALL_DIR="/opt/netmaker"
             FRONTEND_DIR="/var/www/netmaker"
 
-            echo "=== 停止现有服务 ==="
-            sudo systemctl stop netmaker || true
-            sudo systemctl stop netmaker-ui || true
-
-            echo "=== 创建目录 ==="
-            sudo mkdir -p $INSTALL_DIR
-            sudo mkdir -p $FRONTEND_DIR
+            echo "=== 创建目录 (若不存在) ==="
             sudo mkdir -p $INSTALL_DIR/config
+            sudo mkdir -p $FRONTEND_DIR
             sudo mkdir -p /var/log/netmaker
 
-            echo "=== 部署后端 ==="
-            sudo cp /tmp/netmaker-deploy/netmaker-linux $INSTALL_DIR/netmaker
-            sudo chmod +x $INSTALL_DIR/netmaker
+            # ---------------- 部署后端 ----------------
+            if [ "$UPDATE_BACKEND" = "true" ]; then
+              echo "=== 部署后端 ==="
+              sudo systemctl stop netmaker || true
+              sudo cp /tmp/netmaker-deploy/netmaker/netmaker-linux $INSTALL_DIR/netmaker
+              sudo chmod +x $INSTALL_DIR/netmaker
+              
+              if [ -d "/tmp/netmaker-deploy/netmaker/config" ]; then
+                sudo cp -r /tmp/netmaker-deploy/netmaker/config/* $INSTALL_DIR/config/ || true
+              fi
 
-            # 复制配置文件（如果存在）
-            if [ -d "/tmp/netmaker-deploy/config" ]; then
-              sudo cp -r /tmp/netmaker-deploy/config/* $INSTALL_DIR/config/
+              sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
+              SERVER_HOST=0.0.0.0
+              API_PORT=8081
+              MASTER_KEY=${{ secrets.NETMAKER_MASTER_KEY }}
+              DATABASE=sqlite
+              SQL_CONN=$INSTALL_DIR/netmaker.db
+              CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
+              SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
+EOF
+
+              sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
+              [Unit]
+              Description=Netmaker Server
+              After=network.target
+
+              [Service]
+              Type=simple
+              User=root
+              WorkingDirectory=/opt/netmaker
+              EnvironmentFile=/opt/netmaker/server.env
+              ExecStart=/opt/netmaker/netmaker
+              Restart=always
+              RestartSec=10
+              StandardOutput=append:/var/log/netmaker/netmaker.log
+              StandardError=append:/var/log/netmaker/netmaker-error.log
+
+              NoNewPrivileges=true
+              PrivateTmp=true
+
+              [Install]
+              WantedBy=multi-user.target
+EOF
+              sudo systemctl daemon-reload
+              sudo systemctl enable netmaker
+              sudo systemctl start netmaker
+              echo "✅ 后端已重启"
+            else
+              echo "⏩ 后端无需更新"
             fi
 
-            echo "=== 部署前端 ==="
-            cd /tmp/netmaker-deploy
-            tar -xzf frontend-build.tar.gz
-            sudo cp -r build/* $FRONTEND_DIR/
+            # ---------------- 部署前端 ----------------
+            if [ "$UPDATE_FRONTEND" = "true" ]; then
+              echo "=== 部署前端 ==="
+              cd /tmp/netmaker-deploy
+              tar -xzf frontend-build.tar.gz
+              sudo cp -R build/* $FRONTEND_DIR/
+              
+              sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
+              window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
+EOF
 
-            # 生成前端配置
-            sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
-            window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
-            EOF
+              sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
+              server {
+                  listen 8888;
+                  server_name ${{ secrets.DOMAIN_NAME }};
 
-            echo "=== 创建后端配置文件 ==="
-            sudo tee $INSTALL_DIR/server.env > /dev/null <<EOF
-            SERVER_HOST=0.0.0.0
-            API_PORT=8081
-            MASTER_KEY=${{ secrets.NETMAKER_MASTER_KEY }}
-            DATABASE=sqlite
-            SQL_CONN=$INSTALL_DIR/netmaker.db
-            CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
-            SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
-            EOF
+                  location / {
+                      root /var/www/netmaker;
+                      try_files $uri $uri/ /index.html;
+                      add_header Cache-Control "no-cache";
+                  }
 
-            echo "=== 创建 systemd 服务文件 ==="
+                  location /downloads {
+                      root /var/www/netmaker;
+                      autoindex on;
+                      autoindex_exact_size off;
+                      autoindex_localtime on;
+                      add_header Content-Disposition "attachment";
+                  }
 
-            # 后端服务
-            sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
-            [Unit]
-            Description=Netmaker Server
-            After=network.target
-
-            [Service]
-            Type=simple
-            User=root
-            WorkingDirectory=/opt/netmaker
-            EnvironmentFile=/opt/netmaker/server.env
-            ExecStart=/opt/netmaker/netmaker
-            Restart=always
-            RestartSec=10
-            StandardOutput=append:/var/log/netmaker/netmaker.log
-            StandardError=append:/var/log/netmaker/netmaker-error.log
-
-            # 安全设置
-            NoNewPrivileges=true
-            PrivateTmp=true
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            # 前端服务（使用 Nginx）
-            echo "=== 配置 Nginx ==="
-            # 创建 sites-available 和 sites-enabled 目录（如果不存在）
-            sudo mkdir -p /etc/nginx/sites-available
-            sudo mkdir -p /etc/nginx/sites-enabled
-
-            sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
-            server {
-                listen 8888;
-                server_name ${{ secrets.DOMAIN_NAME }};
-
-                # 前端
-                location / {
-                    root /var/www/netmaker;
-                    try_files $uri $uri/ /index.html;
-                    add_header Cache-Control "no-cache";
-                }
-
-                # Netclient 下载
-                location /downloads {
-                    root /var/www/netmaker;
-                    autoindex on;
-                    autoindex_exact_size off;
-                    autoindex_localtime on;
-                    add_header Content-Disposition "attachment";
-                }
-
-                # 后端 API
-                location /api {
-                    proxy_pass http://localhost:8081;
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
-                }
-            }
-            EOF
-
-            # 启用 Nginx 站点
-            sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
-
-            # 确保 nginx.conf 包含 sites-enabled
-            if ! grep -q "include /etc/nginx/sites-enabled/\*;" /etc/nginx/nginx.conf; then
-              sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+                  location /api {
+                      proxy_pass http://localhost:8081;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
+              }
+EOF
+              sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
+              if ! grep -q "include /etc/nginx/sites-enabled/\*;" /etc/nginx/nginx.conf; then
+                sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
+              fi
+              sudo nginx -t && sudo systemctl reload nginx || echo "Nginx 配置有误"
+              echo "✅ 前端已更新"
+            else
+              echo "⏩ 前端无需更新"
             fi
-
-            sudo nginx -t && sudo systemctl reload nginx || echo "Nginx 配置有误，请检查"
-
-            echo "=== 重新加载 systemd ==="
-            sudo systemctl daemon-reload
-
-            echo "=== 启动服务 ==="
-            sudo systemctl enable netmaker
-            sudo systemctl start netmaker
-
-            echo "=== 检查服务状态 ==="
-            sudo systemctl status netmaker --no-pager || true
 
             echo "=== 清理临时文件 ==="
             rm -rf /tmp/netmaker-deploy
 
-            echo "=== 部署完成 ==="
-            echo "后端服务: http://localhost:8081"
-            echo "前端访问: http://${{ secrets.DOMAIN_NAME }}:8888"
-            echo ""
-            echo "查看日志:"
-            echo "  sudo journalctl -u netmaker -f"
-            echo "  sudo tail -f /var/log/netmaker/netmaker.log"
-
       - name: Health Check
+        if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          echo "等待服务启动..."
-          sleep 10
+          echo "等待后端服务启动..."
+          sleep 5
+          curl -f ${{ secrets.BACKEND_URL }}/api/server/health || echo "健康检查失败"
 
-          # 检查后端健康状态
-          curl -f ${{ secrets.BACKEND_URL }}/api/server/health || echo "健康检查失败，请手动检查"
-
-      - name: Notify deployment status
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ 服务端部署成功！"
-            echo "前端: http://${{ secrets.DOMAIN_NAME }}:8888"
-            echo "后端: ${{ secrets.BACKEND_URL }}"
-          else
-            echo "❌ 服务端部署失败，请检查日志"
-          fi
-
-  # 部署客户端二进制文件 - 在客户端编译完成后执行
+  # 步骤 4：客户端归档部署 (如果需要)
   deploy-netclient:
+    needs: [changes, build-netclient]
+    if: always() && (needs.changes.outputs.netclient == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    needs: build-netclient
-    if: always()  # 即使编译失败也执行，尝试部署可用的二进制文件
-
     steps:
       - name: Download all Netclient binaries
         uses: actions/download-artifact@v4
@@ -315,30 +321,17 @@ jobs:
           path: downloads/
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: Package binaries
         continue-on-error: true
         run: |
           if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
             cd downloads
             sha256sum * > checksums.txt
-            echo "✅ Checksums generated"
-            echo "Available binaries:"
-            ls -lh
             cd ..
-          else
-            echo "⚠️ No netclient binaries found"
-            exit 0
-          fi
-
-      - name: Package binaries
-        continue-on-error: true
-        run: |
-          if [ -d "downloads" ] && [ "$(ls -A downloads)" ]; then
             tar -czf netclient-downloads.tar.gz downloads/
-            echo "✅ Binaries packaged"
           fi
 
-      - name: Deploy Netclient binaries to VPS
+      - name: Deploy Netclient to VPS
         if: hashFiles('netclient-downloads.tar.gz') != ''
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -349,7 +342,7 @@ jobs:
           source: "netclient-downloads.tar.gz"
           target: "/tmp/"
 
-      - name: Extract and deploy on VPS
+      - name: Extract on VPS
         if: hashFiles('netclient-downloads.tar.gz') != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -359,16 +352,10 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           script: |
             if [ -f "/tmp/netclient-downloads.tar.gz" ]; then
-              echo "=== 部署 Netclient 下载文件 ==="
               sudo mkdir -p /var/www/netmaker/downloads
               cd /tmp
               tar -xzf netclient-downloads.tar.gz
-              sudo cp -r downloads/* /var/www/netmaker/downloads/
+              sudo mv downloads/* /var/www/netmaker/downloads/
               sudo chmod 644 /var/www/netmaker/downloads/*
               rm -rf downloads netclient-downloads.tar.gz
-              echo "✅ Netclient binaries deployed"
-              echo "Available at: http://${{ secrets.DOMAIN_NAME }}:8888/downloads/"
-              ls -lh /var/www/netmaker/downloads/
-            else
-              echo "⚠️ No netclient binaries to deploy"
             fi
