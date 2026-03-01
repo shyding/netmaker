@@ -131,7 +131,8 @@ func GetAPIHost() string {
 		if remoteip != "" {
 			serverhost = remoteip
 		}
-	}
+	serverhost = strings.TrimPrefix(serverhost, "http://")
+	serverhost = strings.TrimPrefix(serverhost, "https://")
 	return serverhost
 }
 
