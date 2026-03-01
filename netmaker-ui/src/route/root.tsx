@@ -97,13 +97,7 @@ function Routes() {
             <PrivateRoute path="/usergroups">
               <UserGroups />
             </PrivateRoute>
-            <PrivateRoute
-              path="/enrollment-keys"
-              to={{ pathname: '/' }}
-              condition={(user) => {
-                return !!user?.isAdmin
-              }}
-            >
+            <PrivateRoute path="/enrollment-keys">
               <EnrollmentKeysPage />
             </PrivateRoute>
             <PrivateRoute path="/user-permissions">
@@ -149,13 +143,7 @@ function Routes() {
             <PrivateRoute path="/acls">
               <NodeAcls />
             </PrivateRoute>
-            <PrivateRoute
-              path="/enrollment-keys"
-              to={{ pathname: '/' }}
-              condition={(user) => {
-                return !!user?.isAdmin
-              }}
-            >
+            <PrivateRoute path="/enrollment-keys">
               <EnrollmentKeysPage />
             </PrivateRoute>
             <PrivateRoute path="/hosts">
