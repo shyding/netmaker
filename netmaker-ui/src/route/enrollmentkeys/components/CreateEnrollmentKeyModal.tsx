@@ -100,8 +100,14 @@ export function CreateEnrollmentKeyModal(props: CreateEnrollmentKeyModalProps) {
         uses_remaining: type === 'uses' ? numOfUses : 0,
       })
     )
-    props.onClose({}, 'escapeKeyDown')
+    // Reset state before closing to avoid setState after unmount
     setSelectedNetworks([])
+    setTags([])
+    setType('unlimited')
+    setNumOfUses(10)
+    setExpireAt((Date.now() + UNIX_30_DYS) / 1000)
+    // Close modal last
+    props.onClose({}, 'escapeKeyDown')
   }, [dispatch, expireAt, numOfUses, props, selectedNetworks, tags, type])
 
   const selectAllNetworks = useCallback(() => {
