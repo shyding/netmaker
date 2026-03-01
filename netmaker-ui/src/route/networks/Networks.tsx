@@ -44,7 +44,7 @@ export const Networks: React.FC = () => {
             </Grid>
             <Grid item xs={10} md={5} style={{ textAlign: 'center' }}>
               <Grid container justifyContent="space-around" alignItems="center">
-                <Grid item xs={6} md={5}>
+                <Grid item xs={6} md={4}>
                   <TextField
                     InputProps={{
                       startAdornment: (
@@ -57,7 +57,15 @@ export const Networks: React.FC = () => {
                     onChange={(ev) => setSearchTerm(ev.target.value)}
                   />
                 </Grid>
-                <Grid item xs={5.5} md={5}>
+                <Grid item xs={5.5} md={3.5}>
+                  <NmLink
+                    variant="outlined"
+                    to={{ pathname: '/downloads' }}
+                  >
+                    {t('common.downloads')}
+                  </NmLink>
+                </Grid>
+                <Grid item xs={5.5} md={3.5}>
                   <NmLink
                     variant="contained"
                     to={{ pathname: '/networks/create' }}

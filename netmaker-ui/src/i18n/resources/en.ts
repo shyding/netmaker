@@ -135,6 +135,7 @@ export const en: LanguageResource = {
     hosts: 'Hosts',
   },
   common: {
+    downloads: 'Downloads',
     refreshkeys: 'Refresh Keys',
     tagshitentertoaadd: 'Tags (hit enter to add)',
     networks: 'Networks',
