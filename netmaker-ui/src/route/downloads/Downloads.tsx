@@ -87,7 +87,7 @@ export const Downloads: React.FC = () => {
       icon: <LinuxIcon className={classes.platformIcon} />,
       description: 'For most Linux distributions (Ubuntu, Debian, CentOS, etc.)',
       installCommand: `# Download
-wget ${baseUrl}/downloads/netclient-linux-amd64
+wget ${baseUrl}/dl/netclient-linux-amd64
 chmod +x netclient-linux-amd64
 sudo mv netclient-linux-amd64 /usr/local/bin/netclient
 
@@ -101,7 +101,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
       icon: <LinuxIcon className={classes.platformIcon} />,
       description: 'For ARM64 devices (Raspberry Pi 4, AWS Graviton, etc.)',
       installCommand: `# Download
-wget ${baseUrl}/downloads/netclient-linux-arm64
+wget ${baseUrl}/dl/netclient-linux-arm64
 chmod +x netclient-linux-arm64
 sudo mv netclient-linux-arm64 /usr/local/bin/netclient
 
@@ -115,7 +115,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
       icon: <LinuxIcon className={classes.platformIcon} />,
       description: 'For 32-bit ARM devices (Raspberry Pi 3 and older)',
       installCommand: `# Download
-wget ${baseUrl}/downloads/netclient-linux-arm
+wget ${baseUrl}/dl/netclient-linux-arm
 chmod +x netclient-linux-arm
 sudo mv netclient-linux-arm /usr/local/bin/netclient
 
@@ -139,7 +139,7 @@ netclient.exe register -t YOUR_ENROLLMENT_TOKEN`,
       icon: <AppleIcon className={classes.platformIcon} />,
       description: 'For Intel-based Macs',
       installCommand: `# Download
-curl -O ${baseUrl}/downloads/netclient-darwin-amd64
+curl -O ${baseUrl}/dl/netclient-darwin-amd64
 chmod +x netclient-darwin-amd64
 sudo mv netclient-darwin-amd64 /usr/local/bin/netclient
 
@@ -153,7 +153,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
       icon: <AppleIcon className={classes.platformIcon} />,
       description: 'For M1/M2/M3 Macs',
       installCommand: `# Download
-curl -O ${baseUrl}/downloads/netclient-darwin-arm64
+curl -O ${baseUrl}/dl/netclient-darwin-arm64
 chmod +x netclient-darwin-arm64
 sudo mv netclient-darwin-arm64 /usr/local/bin/netclient
 
@@ -167,7 +167,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
       icon: <LinuxIcon className={classes.platformIcon} />,
       description: 'For FreeBSD systems',
       installCommand: `# Download
-fetch ${baseUrl}/downloads/netclient-freebsd-amd64
+fetch ${baseUrl}/dl/netclient-freebsd-amd64
 chmod +x netclient-freebsd-amd64
 sudo mv netclient-freebsd-amd64 /usr/local/bin/netclient
 
@@ -227,7 +227,7 @@ sudo netclient register -t YOUR_ENROLLMENT_TOKEN`,
                   fullWidth
                   startIcon={<DownloadIcon />}
                   className={classes.downloadButton}
-                  href={`/downloads/${download.filename}`}
+                  href={`/dl/${download.filename}`}
                   download
                 >
                   Download {download.filename}
