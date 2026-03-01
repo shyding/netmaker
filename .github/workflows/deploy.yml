@@ -216,7 +216,7 @@ jobs:
               SQL_CONN=$INSTALL_DIR/netmaker.db
               CORS_ALLOWED_ORIGIN=${{ secrets.CORS_ORIGIN }}
               SERVER_HTTP_HOST=${{ secrets.BACKEND_URL }}
-              EOF
+EOF
 
               sudo tee /etc/systemd/system/netmaker.service > /dev/null <<'EOF'
               [Unit]
@@ -239,7 +239,7 @@ jobs:
 
               [Install]
               WantedBy=multi-user.target
-              EOF
+EOF
               sudo systemctl daemon-reload
               sudo systemctl enable netmaker
               sudo systemctl start netmaker
@@ -257,7 +257,7 @@ jobs:
               
               sudo tee $FRONTEND_DIR/config.js > /dev/null <<EOF
               window.REACT_APP_BACKEND = "${{ secrets.BACKEND_URL }}";
-              EOF
+EOF
 
               sudo tee /etc/nginx/sites-available/netmaker > /dev/null <<'EOF'
               server {
@@ -286,7 +286,7 @@ jobs:
                       proxy_set_header X-Forwarded-Proto $scheme;
                   }
               }
-              EOF
+EOF
               sudo ln -sf /etc/nginx/sites-available/netmaker /etc/nginx/sites-enabled/netmaker
               if ! grep -q "include /etc/nginx/sites-enabled/\*;" /etc/nginx/nginx.conf; then
                 sudo sed -i '/http {/a \    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
